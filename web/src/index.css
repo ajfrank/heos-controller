@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+body {
+  -webkit-touch-callout: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+}
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+/* F7: smooth the album-art accent retint. HeroUI ships with no transition on
+   primary-tinted surfaces (it expects a static brand color), so a hard hue
+   swap on every track change snaps unpleasantly. 600ms ease-out feels
+   anchored to the 600ms album-art crossfade in Backdrop. */
+.bg-primary,
+[class*="bg-primary/"],
+.text-primary,
+.border-primary,
+[data-slot="track"],
+[data-slot="filler"],
+[data-slot="thumb"] {
+  transition: background-color 600ms ease-out, border-color 600ms ease-out, color 600ms ease-out;
+}
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible,
+[role="slider"]:focus-visible,
+[role="checkbox"]:focus-visible {
+  outline: 2px solid hsl(var(--heroui-primary));
+  outline-offset: 2px;
+}

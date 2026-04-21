@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.local
+web/dist/
+.DS_Store
+*.log
+.heos-controller/
+coverage/
+.claude/

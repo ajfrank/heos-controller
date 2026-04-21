@@ -1,0 +1,61 @@
+{
+  "tracks": {
+    "href": "https://api.spotify.com/v1/search?q=chill",
+    "items": [
+      {
+        "id": "track1",
+        "name": "Chill Vibes",
+        "uri": "spotify:track:track1",
+        "artists": [{ "name": "Artist A" }, { "name": "Artist B" }],
+        "album": {
+          "name": "Album One",
+          "images": [
+            { "url": "https://i.scdn.co/image/large1", "width": 640, "height": 640 },
+            { "url": "https://i.scdn.co/image/small1", "width": 64, "height": 64 }
+          ]
+        }
+      },
+      null,
+      {
+        "id": "track2",
+        "name": "Track With Null Artist",
+        "uri": "spotify:track:track2",
+        "artists": [null, { "name": "Solo" }],
+        "album": {
+          "name": "Album Two",
+          "images": [{ "url": "https://i.scdn.co/image/small2", "width": 64, "height": 64 }]
+        }
+      }
+    ]
+  },
+  "playlists": {
+    "items": [
+      {
+        "id": "pl1",
+        "name": "Chill Mix",
+        "uri": "spotify:playlist:pl1",
+        "owner": { "display_name": "Spotify" },
+        "images": [{ "url": "https://i.scdn.co/image/pl1", "width": 300, "height": 300 }]
+      },
+      null,
+      {
+        "id": "pl2",
+        "name": "Dinner",
+        "uri": "spotify:playlist:pl2",
+        "owner": { "display_name": "Friend" },
+        "images": []
+      }
+    ]
+  },
+  "albums": {
+    "items": [
+      {
+        "id": "al1",
+        "name": "Chillout Lounge",
+        "uri": "spotify:album:al1",
+        "artists": [{ "name": "Various" }],
+        "images": [{ "url": "https://i.scdn.co/image/al1", "width": 300, "height": 300 }]
+      }
+    ]
+  }
+}

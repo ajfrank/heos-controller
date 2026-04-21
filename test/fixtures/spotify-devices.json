@@ -1,0 +1,7 @@
+{
+  "devices": [
+    { "id": "dev-kitchen", "name": "Kitchen", "type": "Speaker", "is_active": false, "volume_percent": 50 },
+    { "id": "dev-living", "name": "Living Room", "type": "Speaker", "is_active": true, "volume_percent": 30 },
+    { "id": "dev-echo", "name": "Echo Dot", "type": "Speaker", "is_active": false, "volume_percent": 60 }
+  ]
+}
