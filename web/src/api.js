@@ -55,6 +55,12 @@ export const api = {
     }),
   spotifyDisconnect: () =>
     jsonFetch('/api/spotify/disconnect', { method: 'POST' }),
+  removeRecent: (uri) =>
+    jsonFetch('/api/recents/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uri }),
+    }),
 };
 
 // connectWS returns a managed connection: tracks attempts, applies exponential

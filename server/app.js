@@ -302,6 +302,19 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     }
   });
 
+  // Remove a single recent (the wife taps × on a tile in Edit mode). Pinned
+  // items live in localStorage so they're managed client-side; recents are
+  // server state that must be persisted so the deletion survives reboots.
+  app.post('/api/recents/remove', async (req, res) => {
+    const { uri } = req.body || {};
+    if (!uri || typeof uri !== 'string') return res.status(400).json({ error: 'uri required' });
+    const next = state.recents.filter((r) => r.uri !== uri);
+    state.setRecents(next);
+    try { persist.write(RECENTS_FILE, next); }
+    catch (e) { console.warn('[heos] recents persist failed:', e.message); }
+    res.json({ ok: true });
+  });
+
   // F3: progress proxy. Client polls every ~5s while a track is playing and
   // tab is visible; we just shuttle Spotify's /me/player. Returning 200 +
   // null when nothing is playing keeps the client's polling loop simple.

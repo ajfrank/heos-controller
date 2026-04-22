@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Image } from '@heroui/react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { api } from '../api.js';
 
 // Pinned items live in localStorage (per-tablet, no sync); recents come from the
 // server snapshot (so any tablet sees the same history). Both render as 80×80
@@ -30,6 +31,7 @@ export function pinItem(item) {
 
 export default function QuickPicks({ recents = [], onPlay }) {
   const [pins, setPins] = useState(loadPins);
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     const onChange = () => setPins(loadPins());
@@ -47,14 +49,33 @@ export default function QuickPicks({ recents = [], onPlay }) {
     setPins(next);
   }
 
+  function removeRecent(uri) {
+    // Fire-and-forget — the WS recents broadcast updates the prop.
+    api.removeRecent(uri).catch(() => {});
+  }
+
   // Dedup: a pinned item shouldn't also show in the recents row.
   const pinUris = new Set(pins.map((p) => p.uri));
   const recentTiles = recents.filter((r) => !pinUris.has(r.uri));
+
+  // Auto-exit edit mode when there's nothing left to edit.
+  useEffect(() => {
+    if (editing && pins.length === 0 && recentTiles.length === 0) setEditing(false);
+  }, [editing, pins.length, recentTiles.length]);
 
   if (!pins.length && !recentTiles.length) return null;
 
   return (
     <div className="flex flex-col gap-2">
+      <div className="flex justify-end -mt-7 mb-1">
+        <button
+          type="button"
+          onClick={() => setEditing((v) => !v)}
+          className="text-tiny font-semibold tracking-wide text-white/55 hover:text-white px-1.5 py-0.5 rounded transition-colors"
+        >
+          {editing ? 'Done' : 'Edit'}
+        </button>
+      </div>
       {pins.length > 0 && (
         <Row label="Pinned">
           {pins.map((item) => (
@@ -62,20 +83,24 @@ export default function QuickPicks({ recents = [], onPlay }) {
               key={`pin-${item.uri}`}
               item={item}
               isPinned
+              editing={editing}
               onPlay={onPlay}
               onLongPress={() => unpin(item.uri)}
+              onRemove={() => unpin(item.uri)}
             />
           ))}
         </Row>
       )}
       {recentTiles.length > 0 && (
-        <Row label="Recent">
+        <Row>
           {recentTiles.map((item) => (
             <Tile
               key={`recent-${item.uri}`}
               item={item}
+              editing={editing}
               onPlay={onPlay}
               onLongPress={() => pinItem(item)}
+              onRemove={() => removeRecent(item.uri)}
             />
           ))}
         </Row>
@@ -87,7 +112,9 @@ export default function QuickPicks({ recents = [], onPlay }) {
 function Row({ label, children }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <p className="text-tiny uppercase tracking-[0.1em] text-default-500 font-semibold ml-1">{label}</p>
+      {label && (
+        <p className="text-tiny uppercase tracking-[0.1em] text-white/50 font-semibold ml-1">{label}</p>
+      )}
       <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 no-scrollbar">
         <AnimatePresence initial={false}>
           {children}
@@ -103,12 +130,13 @@ function Row({ label, children }) {
 // pinned playlists by trying to scroll the strip.
 const LONGPRESS_MOVE_THRESHOLD = 10;
 
-function Tile({ item, isPinned = false, onPlay, onLongPress }) {
+function Tile({ item, isPinned = false, editing = false, onPlay, onLongPress, onRemove }) {
   const timer = useRef(null);
   const fired = useRef(false);
   const startPos = useRef(null);
 
   function start(e) {
+    if (editing) return; // long-press disabled while edit affordance is showing
     fired.current = false;
     startPos.current = { x: e.clientX, y: e.clientY };
     timer.current = setTimeout(() => {
@@ -131,6 +159,7 @@ function Tile({ item, isPinned = false, onPlay, onLongPress }) {
   function tap() {
     cancel();
     if (fired.current) return; // long-press already handled
+    if (editing) return; // taps in edit mode are reserved for the × button
     onPlay({
       uri: item.uri,
       label: item.label,
@@ -141,51 +170,74 @@ function Tile({ item, isPinned = false, onPlay, onLongPress }) {
   }
 
   return (
-    <motion.button
+    <motion.div
       key={item.uri}
-      type="button"
-      onClick={tap}
-      onPointerDown={start}
-      onPointerMove={move}
-      onPointerUp={cancel}
-      onPointerLeave={cancel}
-      onPointerCancel={cancel}
-      onContextMenu={(e) => { e.preventDefault(); onLongPress?.(item); }}
       initial={{ opacity: 0, scale: 0.92 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.92 }}
-      whileTap={{ scale: 0.95 }}
       transition={{ type: 'spring', stiffness: 360, damping: 24 }}
-      className="relative shrink-0 rounded-large overflow-hidden bg-content2 w-20 h-20 border border-white/10 active:border-primary focus-visible:ring-2 focus-visible:ring-primary"
-      aria-label={`Play ${item.label}`}
-      // Title hints the long-press action — visible on desktop hover and via
-      // assistive tech. The visible pin dot below is what tells touch users
-      // these tiles have a manage gesture.
-      title={`${item.label}${item.sublabel ? ` — ${item.sublabel}` : ''}\n${isPinned ? 'Press and hold to unpin' : 'Press and hold to pin'}`}
+      className="relative shrink-0"
     >
-      {item.art ? (
-        <Image
-          src={item.art}
-          alt={item.label}
-          width={80}
-          height={80}
-          radius="none"
-          className="object-cover w-20 h-20"
-        />
-      ) : (
-        <div className="w-20 h-20 flex items-center justify-center text-default-500 text-tiny px-1 text-center">
+      <motion.button
+        type="button"
+        onClick={tap}
+        onPointerDown={start}
+        onPointerMove={move}
+        onPointerUp={cancel}
+        onPointerLeave={cancel}
+        onPointerCancel={cancel}
+        onContextMenu={(e) => { if (!editing) { e.preventDefault(); onLongPress?.(item); } }}
+        whileTap={editing ? undefined : { scale: 0.95 }}
+        className="relative block rounded-large overflow-hidden bg-content2 w-20 h-20 border border-white/10 active:border-white/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+        aria-label={editing ? `Tile ${item.label}` : `Play ${item.label}`}
+        // Title hints the long-press action — visible on desktop hover and via
+        // assistive tech. The visible pin dot below is what tells touch users
+        // these tiles have a manage gesture.
+        title={`${item.label}${item.sublabel ? ` — ${item.sublabel}` : ''}\n${isPinned ? 'Press and hold to unpin' : 'Press and hold to pin'}`}
+      >
+        {item.art ? (
+          <Image
+            src={item.art}
+            alt={item.label}
+            width={80}
+            height={80}
+            radius="none"
+            className="object-cover w-20 h-20"
+          />
+        ) : (
+          <div className="w-20 h-20 flex items-center justify-center text-default-500 text-tiny px-1 text-center">
+            {item.label}
+          </div>
+        )}
+        <span className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/85 to-transparent text-white text-[10px] leading-tight font-semibold px-1.5 pt-2 pb-1 truncate text-left">
           {item.label}
-        </div>
-      )}
-      <span className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/85 to-transparent text-white text-[10px] leading-tight font-semibold px-1.5 pt-2 pb-1 truncate text-left">
-        {item.label}
-      </span>
-      {isPinned && (
-        <span
-          aria-hidden="true"
-          className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary shadow-[0_0_4px_hsl(var(--heroui-primary)_/_0.8)]"
-        />
-      )}
-    </motion.button>
+        </span>
+        {isPinned && !editing && (
+          <span
+            aria-hidden="true"
+            className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-white/90 shadow-[0_0_4px_rgba(255,255,255,0.6)]"
+          />
+        )}
+      </motion.button>
+      <AnimatePresence>
+        {editing && (
+          <motion.button
+            type="button"
+            key="remove"
+            initial={{ opacity: 0, scale: 0.6 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.6 }}
+            transition={{ type: 'spring', stiffness: 500, damping: 24 }}
+            onClick={(e) => { e.stopPropagation(); onRemove?.(item); }}
+            aria-label={`Remove ${item.label}`}
+            className="absolute top-1 left-1 z-10 w-6 h-6 rounded-full bg-black/75 text-white flex items-center justify-center backdrop-blur-sm ring-1 ring-white/20 shadow-md hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+          >
+            <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </motion.button>
+        )}
+      </AnimatePresence>
+    </motion.div>
   );
 }
