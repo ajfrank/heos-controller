@@ -21,6 +21,16 @@ describe('applyChange', () => {
     expect(next.activePids).toEqual(['1', '2']);
   });
 
+  it('replaces zones on type=zones', () => {
+    const next = applyChange(seed(), { type: 'zones', zones: [{ name: 'Upstairs', pids: ['1'] }] });
+    expect(next.zones).toEqual([{ name: 'Upstairs', pids: ['1'] }]);
+  });
+
+  it('replaces activeZones on type=activeZones', () => {
+    const next = applyChange(seed(), { type: 'activeZones', activeZones: ['Upstairs', 'Porch'] });
+    expect(next.activeZones).toEqual(['Upstairs', 'Porch']);
+  });
+
   it('replaces nowPlaying on type=nowPlaying', () => {
     const next = applyChange(seed(), { type: 'nowPlaying', nowPlaying: { 1: { song: 'X' } } });
     expect(next.nowPlaying).toEqual({ 1: { song: 'X' } });

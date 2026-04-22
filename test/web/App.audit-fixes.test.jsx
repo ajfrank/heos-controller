@@ -2,8 +2,8 @@
 //   A3 — usePlaybackProgress re-arms when snap.nowPlaying.state flips to 'play'
 //        after being paused. Without this, paused → played leaves the bar
 //        frozen until the tab is hidden+shown.
-//   B2 — setHeosVolume rolls back the optimistic per-zone update when
-//        api.setVolume rejects (symmetric with the existing setActiveHeos
+//   B2 — setZoneVolume rolls back the optimistic per-zone update when
+//        api.setVolume rejects (symmetric with the existing setActive
 //        rollback).
 
 import React from 'react';
@@ -32,8 +32,13 @@ vi.mock('../../web/src/api.js', () => ({
       type: 'snapshot',
       state: {
         players: [{ pid: '1', name: 'Bar' }, { pid: '2', name: 'Basement' }],
+        zones: [
+          { name: 'Downstairs', pids: ['1', '2'] },
+        ],
+        activeZones: ['Downstairs'],
         activePids: ['1', '2'],
         nowPlaying: { pid: '1', state: 'pause', song: 'Track', artist: 'A' },
+        nowPlayingByPid: { 1: { state: 'pause', song: 'Track', artist: 'A' } },
         volumes: { 1: 50, 2: 60 },
         spotifyConnected: true,
         recents: [],
@@ -93,21 +98,25 @@ describe('A3: usePlaybackProgress re-arms on play-state hint change', () => {
   });
 });
 
-describe('B2: setHeosVolume optimistic rollback', () => {
-  it('rolls back snap.volumes[pid] when api.setVolume rejects', async () => {
+describe('B2: setZoneVolume optimistic rollback', () => {
+  it('rolls back snap.volumes[pid] for every speaker in the zone when api.setVolume rejects', async () => {
     api.setVolume.mockRejectedValueOnce(new Error('HEOS unreachable'));
     renderApp();
     await waitFor(() => expect(lastZoneGridProps).not.toBeNull());
-    // Sanity: starting volume for pid=1 is 50.
+    // Sanity: starting volumes (50, 60).
     expect(lastZoneGridProps.volumes['1']).toBe(50);
+    expect(lastZoneGridProps.volumes['2']).toBe(60);
 
     await act(async () => {
-      await lastZoneGridProps.onVolume('1', 80);
+      await lastZoneGridProps.onVolume('Downstairs', 80);
     });
 
-    // After the rejected setVolume, the slider value must be back to 50, not
-    // stuck at the optimistic 80.
-    await waitFor(() => expect(lastZoneGridProps.volumes['1']).toBe(50));
+    // After the rejected setVolume, both pids in the zone must be back to
+    // their original values, not stuck at the optimistic 80.
+    await waitFor(() => {
+      expect(lastZoneGridProps.volumes['1']).toBe(50);
+      expect(lastZoneGridProps.volumes['2']).toBe(60);
+    });
   });
 
   it('keeps the new value when api.setVolume resolves', async () => {
@@ -116,8 +125,11 @@ describe('B2: setHeosVolume optimistic rollback', () => {
     await waitFor(() => expect(lastZoneGridProps).not.toBeNull());
 
     await act(async () => {
-      await lastZoneGridProps.onVolume('1', 80);
+      await lastZoneGridProps.onVolume('Downstairs', 80);
     });
-    await waitFor(() => expect(lastZoneGridProps.volumes['1']).toBe(80));
+    await waitFor(() => {
+      expect(lastZoneGridProps.volumes['1']).toBe(80);
+      expect(lastZoneGridProps.volumes['2']).toBe(80);
+    });
   });
 });

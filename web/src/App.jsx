@@ -21,7 +21,8 @@ const sectionCardClasses = {
 
 export default function App() {
   const [snap, setSnap] = useState({
-    players: [],
+    zones: [],
+    activeZones: [],
     activePids: [],
     nowPlaying: null,
     nowPlayingByPid: {},
@@ -73,17 +74,16 @@ export default function App() {
     return () => window.removeEventListener(SPOTIFY_REAUTH_EVENT, onReauth);
   }, []);
 
-  async function setActiveHeos(pids) {
-    // Capture prior pids so we can roll back the optimistic toggle when HEOS
-    // rejects the group (most often syserrno=-9 — speaker can't be grouped
-    // with this leader). Without rollback the checkmark stays on a zone the
-    // server never accepted.
-    const prior = snap.activePids;
-    setSnap((cur) => ({ ...cur, activePids: pids }));
+  async function setActiveZones(zones) {
+    // Capture prior selection so we can roll back the optimistic toggle when
+    // HEOS rejects the regroup. Without rollback the checkmark stays on a
+    // zone the server never accepted.
+    const prior = snap.activeZones;
+    setSnap((cur) => ({ ...cur, activeZones: zones }));
     try {
-      await api.setActive(pids);
+      await api.setActive(zones);
     } catch (e) {
-      setSnap((cur) => ({ ...cur, activePids: prior }));
+      setSnap((cur) => ({ ...cur, activeZones: prior }));
       showBanner(e.message, "Couldn't update zones");
     }
   }
@@ -96,7 +96,7 @@ export default function App() {
   const playInflight = useRef(false);
   async function play(itemBody) {
     if (playInflight.current) return;
-    if (!snap.activePids.length) {
+    if (!snap.activeZones.length) {
       showToast('Select at least one zone first', 'error'); return;
     }
     playInflight.current = true;
@@ -120,23 +120,33 @@ export default function App() {
     try { await api.control(action); } catch (e) { showToast(e.message, 'error'); }
   }
 
-  async function setHeosVolume(pid, level) {
-    // Symmetric rollback with setActiveHeos: snapshot the prior level so a
-    // failed setVolume doesn't strand the slider at the optimistic value
-    // until a WS volume_changed event happens to drift it back.
-    const prior = snap.volumes[pid];
-    setSnap((cur) => ({ ...cur, volumes: { ...cur.volumes, [pid]: level } }));
-    try { await api.setVolume(pid, level); }
+  async function setZoneVolume(zoneName, level) {
+    // Optimistic per-pid rollback: snapshot the prior levels for every speaker
+    // in the zone so a failed setVolume doesn't strand the slider at the
+    // optimistic value until a WS volume_changed event happens to drift it back.
+    const zone = snap.zones.find((z) => z.name === zoneName);
+    if (!zone) return;
+    const prior = {};
+    for (const pid of zone.pids) prior[pid] = snap.volumes[pid];
+    setSnap((cur) => {
+      const next = { ...cur.volumes };
+      for (const pid of zone.pids) next[pid] = level;
+      return { ...cur, volumes: next };
+    });
+    try { await api.setVolume(zoneName, level); }
     catch (e) {
-      setSnap((cur) => ({ ...cur, volumes: { ...cur.volumes, [pid]: prior } }));
+      setSnap((cur) => {
+        const next = { ...cur.volumes };
+        for (const pid of zone.pids) next[pid] = prior[pid];
+        return { ...cur, volumes: next };
+      });
       showToast(e.message, 'error');
     }
   }
 
-  // Master volume is a local-state slider so a per-zone WS volume_changed
-  // event can't yank the thumb out of the user's finger mid-drag. We sync the
-  // displayed value to the average of active per-zone volumes only when the
-  // user isn't actively dragging.
+  // Master volume = average across every active-zone speaker; slider drag
+  // overrides locally so an incoming WS volume_changed event can't yank the
+  // thumb out of the user's finger.
   const [masterOverride, setMasterOverride] = useState(null);
   const draggingMaster = useRef(false);
 
@@ -150,11 +160,10 @@ export default function App() {
   function setMasterVolume(level) {
     draggingMaster.current = true;
     setMasterOverride(level);
-    for (const pid of snap.activePids) setHeosVolume(pid, level);
+    for (const name of snap.activeZones) setZoneVolume(name, level);
   }
   function endMasterDrag() {
     draggingMaster.current = false;
-    // Let the next derived recompute (driven by incoming WS volume events) win.
     setMasterOverride(null);
   }
 
@@ -235,16 +244,8 @@ export default function App() {
 
         <Card radius="lg" classNames={sectionCardClasses}>
           <CardBody className={sectionCardClasses.body}>
-            <NowPlaying
-              nowPlaying={displayedNowPlaying}
-              onControl={control}
-              masterVolume={masterDisplay}
-              onMasterVolume={setMasterVolume}
-              onMasterVolumeEnd={endMasterDrag}
-              playback={playback}
-              onSeek={seekTo}
-              onKillSession={killSpotifySession}
-            />
+            <SectionTitle>Search Spotify</SectionTitle>
+            <SearchResults onPlay={play} onError={(m) => showToast(m, 'error')} />
           </CardBody>
         </Card>
 
@@ -252,18 +253,18 @@ export default function App() {
           <CardBody className={sectionCardClasses.body}>
             <SectionTitle>Zones</SectionTitle>
             <ZoneGrid
-              players={snap.players}
-              activePids={snap.activePids}
+              zones={snap.zones}
+              activeZones={snap.activeZones}
               volumes={snap.volumes}
               nowPlayingByPid={snap.nowPlayingByPid}
               wsReady={wsReady}
-              onToggle={(pid) => {
-                const next = snap.activePids.includes(pid)
-                  ? snap.activePids.filter((p) => p !== pid)
-                  : [...snap.activePids, pid];
-                if (next.length) setActiveHeos(next);
+              onToggle={(name) => {
+                const next = snap.activeZones.includes(name)
+                  ? snap.activeZones.filter((z) => z !== name)
+                  : [...snap.activeZones, name];
+                setActiveZones(next);
               }}
-              onVolume={setHeosVolume}
+              onVolume={setZoneVolume}
             />
           </CardBody>
         </Card>
@@ -279,8 +280,16 @@ export default function App() {
 
         <Card radius="lg" classNames={sectionCardClasses}>
           <CardBody className={sectionCardClasses.body}>
-            <SectionTitle>Search Spotify</SectionTitle>
-            <SearchResults onPlay={play} onError={(m) => showToast(m, 'error')} />
+            <NowPlaying
+              nowPlaying={displayedNowPlaying}
+              onControl={control}
+              masterVolume={masterDisplay}
+              onMasterVolume={setMasterVolume}
+              onMasterVolumeEnd={endMasterDrag}
+              playback={playback}
+              onSeek={seekTo}
+              onKillSession={killSpotifySession}
+            />
           </CardBody>
         </Card>
       </motion.div>

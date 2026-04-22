@@ -30,8 +30,11 @@ vi.mock('../../web/src/api.js', () => ({
       type: 'snapshot',
       state: {
         players: [{ pid: '1', name: 'Bar' }],
+        zones: [{ name: 'Bar', pids: ['1'] }],
+        activeZones: ['Bar'],
         activePids: ['1'],
         nowPlaying: null,
+        nowPlayingByPid: {},
         volumes: { 1: 50 },
         spotifyConnected: true,
         recents: [{ uri: 'spotify:track:r', label: 'R', sublabel: '', art: '', badge: 'Track', ts: 1 }],

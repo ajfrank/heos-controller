@@ -1,11 +1,26 @@
 import { describe, it, expect, vi } from 'vitest';
 import { State } from '../../server/state.js';
 
+// Helper: build a State seeded with a fixed zone-config so tests can drive
+// activeZones directly without going through zones.json/resolveZones.
+function withZones(zones) {
+  const s = new State();
+  s.setZones(zones);
+  return s;
+}
+
+const SEED_ZONES = [
+  { name: 'Upstairs', pids: ['1', '2'] },
+  { name: 'Porch', pids: ['3'] },
+];
+
 describe('State', () => {
   it('starts with empty defaults and a Spotify source', () => {
     const s = new State();
     expect(s.snapshot()).toEqual({
       players: [],
+      zones: [],
+      activeZones: [],
       activePids: [],
       source: 'spotify',
       nowPlaying: null,
@@ -25,27 +40,16 @@ describe('State', () => {
     expect(onChange).toHaveBeenCalledWith({ type: 'players', players });
   });
 
-  it('setActive stores activePids and emits an "active" change', () => {
-    const s = new State();
+  it('setActiveZones derives activePids from the zone config and emits both events', () => {
+    const s = withZones(SEED_ZONES);
     const onChange = vi.fn();
     s.on('change', onChange);
-    s.setActive(['1', '2']);
+    s.setActiveZones(['Upstairs']);
+    expect(s.activeZones).toEqual(['Upstairs']);
     expect(s.activePids).toEqual(['1', '2']);
-    expect(onChange).toHaveBeenCalledWith({ type: 'active', activePids: ['1', '2'] });
-  });
-
-  // Regression: setActive must coerce numeric pids to strings so the leader
-  // comparison in setNowPlaying (`activePids[0] === String(pid)`) keeps working
-  // when the REST request body parses pids as numbers.
-  it('setActive stringifies numeric pids and the leader broadcast still fires', () => {
-    const s = new State();
-    s.setActive([1, 2]);
-    expect(s.activePids).toEqual(['1', '2']);
-    const onChange = vi.fn();
-    s.on('change', onChange);
-    s.setNowPlaying('1', { song: 'Foo' });
     const types = onChange.mock.calls.map((c) => c[0].type);
-    expect(types).toContain('nowPlaying');
+    expect(types).toContain('activeZones');
+    expect(types).toContain('active');
   });
 
   it('setVolume records per-pid volume and emits per change', () => {
@@ -75,19 +79,20 @@ describe('State', () => {
     });
   });
 
-  it('derived nowPlaying reflects the active group leader', () => {
-    const s = new State();
-    s.setActive(['1', '2']);
+  it('derived nowPlaying reflects the active zone leader', () => {
+    const s = withZones(SEED_ZONES);
+    s.setActiveZones(['Upstairs']);
     s.setNowPlaying('1', { song: 'Lead' });
     s.setNowPlaying('2', { song: 'Member' });
     expect(s.nowPlaying).toEqual({ pid: '1', song: 'Lead' });
-    s.setActive(['2']);
-    expect(s.nowPlaying).toEqual({ pid: '2', song: 'Member' });
+    s.setActiveZones(['Porch']);
+    s.setNowPlaying('3', { song: 'Other zone' });
+    expect(s.nowPlaying).toEqual({ pid: '3', song: 'Other zone' });
   });
 
   it('setNowPlaying for the active leader also broadcasts the derived nowPlaying', () => {
-    const s = new State();
-    s.setActive(['1']);
+    const s = withZones(SEED_ZONES);
+    s.setActiveZones(['Upstairs']);
     const onChange = vi.fn();
     s.on('change', onChange);
     s.setNowPlaying('1', { song: 'Foo' });
@@ -97,19 +102,19 @@ describe('State', () => {
   });
 
   it('setNowPlaying for a non-leader does NOT broadcast the legacy nowPlaying', () => {
-    const s = new State();
-    s.setActive(['1']);
+    const s = withZones(SEED_ZONES);
+    s.setActiveZones(['Upstairs']);
     const onChange = vi.fn();
     s.on('change', onChange);
-    s.setNowPlaying('2', { song: 'Other zone' });
+    s.setNowPlaying('3', { song: 'Other zone' });
     const types = onChange.mock.calls.map((c) => c[0].type);
     expect(types).toContain('nowPlayingByPid');
     expect(types).not.toContain('nowPlaying');
   });
 
   it('setNowPlaying with null clears the per-pid entry', () => {
-    const s = new State();
-    s.setActive(['1']);
+    const s = withZones(SEED_ZONES);
+    s.setActiveZones(['Upstairs']);
     s.setNowPlaying('1', { song: 'Foo' });
     s.setNowPlaying('1', null);
     expect(s.nowPlayingByPid['1']).toBeUndefined();
@@ -126,14 +131,16 @@ describe('State', () => {
   });
 
   it('snapshot reflects all mutations', () => {
-    const s = new State();
+    const s = withZones(SEED_ZONES);
     s.setPlayers([{ pid: '1', name: 'K' }]);
-    s.setActive(['1']);
+    s.setActiveZones(['Upstairs']);
     s.setVolume('1', 80);
     s.setNowPlaying('1', { song: 'Hello' });
     expect(s.snapshot()).toEqual({
       players: [{ pid: '1', name: 'K' }],
-      activePids: ['1'],
+      zones: SEED_ZONES,
+      activeZones: ['Upstairs'],
+      activePids: ['1', '2'],
       source: 'spotify',
       nowPlaying: { pid: '1', song: 'Hello' },
       nowPlayingByPid: { 1: { song: 'Hello' } },
@@ -154,13 +161,15 @@ describe('State', () => {
       expect(onChange).toHaveBeenCalledTimes(1);
     });
 
-    it('setActive does not emit when the same pid array is passed', () => {
-      const s = new State();
+    it('setActiveZones does not emit when the same zone array is passed', () => {
+      const s = withZones(SEED_ZONES);
       const onChange = vi.fn();
       s.on('change', onChange);
-      s.setActive(['1', '2']);
-      s.setActive(['1', '2']);
-      expect(onChange).toHaveBeenCalledTimes(1);
+      s.setActiveZones(['Upstairs']);
+      s.setActiveZones(['Upstairs']);
+      // Two emits would be activeZones + active; only the first call should fire.
+      const activeZoneEmits = onChange.mock.calls.filter((c) => c[0].type === 'activeZones').length;
+      expect(activeZoneEmits).toBe(1);
     });
 
     it('setPlayers does not emit when player list is structurally identical', () => {

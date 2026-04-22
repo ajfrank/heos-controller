@@ -1,0 +1,7 @@
+{
+  "zones": [
+    { "name": "Upstairs",   "speakers": ["Kitchen", "Living Room"] },
+    { "name": "Porch",      "speakers": ["Outdoor", "Deck"] },
+    { "name": "Downstairs", "speakers": ["Basement", "Bar"] }
+  ]
+}

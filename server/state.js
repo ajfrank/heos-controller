@@ -1,21 +1,32 @@
 // In-memory state shared between REST endpoints and the WebSocket broadcaster.
 // Plain object with subscribe/notify; nothing fancy.
+//
+// Zone-first model: the user picks named zones (config-driven, see zones.js).
+// activePids is derived from activeZones + the resolved zones table; nothing
+// outside this file should mutate it.
 
 import { EventEmitter } from 'node:events';
+import { pidsForZones } from './zones.js';
 
 class State extends EventEmitter {
   constructor() {
     super();
-    this.players = []; // [{ pid, name, model, ip }]
-    this.activePids = []; // selected HEOS zones (first is treated as group leader)
-    this.source = 'spotify'; // single source; kept in snapshot for forward compat
-    this.nowPlayingByPid = {}; // pid -> { song|title, artist, album, image_url, state }
-    this.volumes = {}; // pid -> 0-100
-    this.recents = []; // [{ uri, label, sublabel, art, badge, ts }] — most-recent first, capped
+    this.players = []; // [{ pid, name, model, ip }] — raw HEOS discovery
+    this.zones = []; // [{ name, pids }] — resolved against players
+    this.activeZones = []; // selected zone names; first treated as group leader source
+    this.source = 'spotify';
+    this.nowPlayingByPid = {};
+    this.volumes = {};
+    this.recents = [];
   }
 
-  // Derived: the now-playing of the active group leader (first activePid). UI's
-  // "Now Playing" card reads this; per-zone subtitles read nowPlayingByPid[pid].
+  // Derived: flat unique pid list across active zones, in zone-config order.
+  // The first pid is the candidate group leader (overridden by /api/play if
+  // a different zone-pid is the one Spotify can actually see).
+  get activePids() {
+    return pidsForZones(this.zones, this.activeZones);
+  }
+
   get nowPlaying() {
     const lead = this.activePids[0];
     if (!lead) return null;
@@ -29,23 +40,41 @@ class State extends EventEmitter {
     this.emit('change', { type: 'players', players });
   }
 
-  setActive(pids) {
-    // Normalize to strings so leader-change comparisons against pids from
-    // HEOS event payloads (URLSearchParams = always strings) match. Without
-    // this, JSON-parsed numeric pids from the API request stay as numbers
-    // and `activePids[0] === String(pid)` in setNowPlaying silently fails —
-    // the master Now Playing card never updates.
-    pids = pids.map(String);
-    if (sameStringArray(this.activePids, pids)) return;
-    const priorLeader = this.activePids[0];
+  // Caller (server bootstrap) recomputes zones whenever players change. Kept
+  // separate from setPlayers so tests can drive it directly without a real
+  // zones.json round-trip.
+  setZones(zones) {
+    if (sameZones(this.zones, zones)) return;
+    const priorPids = this.activePids;
     const priorDerived = this.nowPlaying;
-    this.activePids = pids;
-    this.emit('change', { type: 'active', activePids: pids });
-    // Leader change → re-broadcast the derived nowPlaying so the master Now
-    // Playing card flips to whatever the new leader is playing. Skip the
-    // emit when the derived value didn't actually change (e.g. neither
-    // leader had any media yet, so both are null).
-    if (pids[0] !== priorLeader && !sameDerivedNowPlaying(priorDerived, this.nowPlaying)) {
+    this.zones = zones;
+    this.emit('change', { type: 'zones', zones });
+    // Re-broadcast active/nowPlaying if the derived pid list changed (e.g. a
+    // zone gained/lost a speaker because HEOS player names shifted).
+    const nextPids = this.activePids;
+    if (!sameStringArray(priorPids, nextPids)) {
+      this.emit('change', { type: 'active', activePids: nextPids });
+      const nextDerived = this.nowPlaying;
+      if (!sameDerivedNowPlaying(priorDerived, nextDerived)) {
+        this.emit('change', { type: 'nowPlaying', nowPlaying: nextDerived });
+      }
+    }
+  }
+
+  setActiveZones(names) {
+    names = (names || []).map(String);
+    if (sameStringArray(this.activeZones, names)) return;
+    const priorPids = this.activePids;
+    const priorDerived = this.nowPlaying;
+    this.activeZones = names;
+    this.emit('change', { type: 'activeZones', activeZones: names });
+    const nextPids = this.activePids;
+    // Keep emitting the legacy `active` change so any pid-aware internals
+    // (and old test fixtures) still get notified. UI doesn't rely on it.
+    if (!sameStringArray(priorPids, nextPids)) {
+      this.emit('change', { type: 'active', activePids: nextPids });
+    }
+    if (nextPids[0] !== priorPids[0] && !sameDerivedNowPlaying(priorDerived, this.nowPlaying)) {
       this.emit('change', { type: 'nowPlaying', nowPlaying: this.nowPlaying });
     }
   }
@@ -62,9 +91,6 @@ class State extends EventEmitter {
     if (np) this.nowPlayingByPid[pid] = np;
     else delete this.nowPlayingByPid[pid];
     this.emit('change', { type: 'nowPlayingByPid', pid, nowPlaying: np || null });
-    // If this pid is the active leader, also broadcast the legacy nowPlaying
-    // shape so existing UI surfaces (and the App's accent/Backdrop) update
-    // without needing a per-pid lookup.
     if (this.activePids[0] === String(pid)) {
       this.emit('change', { type: 'nowPlaying', nowPlaying: this.nowPlaying });
     }
@@ -84,6 +110,8 @@ class State extends EventEmitter {
   snapshot() {
     return {
       players: this.players,
+      zones: this.zones,
+      activeZones: this.activeZones,
       activePids: this.activePids,
       source: this.source,
       nowPlaying: this.nowPlaying,
@@ -111,9 +139,16 @@ function samePlayerList(a, b) {
   return true;
 }
 
-// Compare the fields the UI actually renders (queue ids etc. change on every
-// poll and would defeat dedupe). Operates on the per-pid body — pid is keyed
-// in the map, not part of the body.
+function sameZones(a, b) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].name !== b[i].name) return false;
+    if (!sameStringArray(a[i].pids, b[i].pids)) return false;
+  }
+  return true;
+}
+
 function sameNowPlayingBody(a, b) {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -122,8 +157,6 @@ function sameNowPlayingBody(a, b) {
     && a.image_url === b.image_url && a.state === b.state;
 }
 
-// Compares the derived {pid, ...body} value (or null) used by setActive's
-// re-broadcast guard.
 function sameDerivedNowPlaying(a, b) {
   if (a === b) return true;
   if (!a || !b) return false;

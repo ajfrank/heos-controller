@@ -29,8 +29,13 @@ vi.mock('../../web/src/api.js', () => ({
       type: 'snapshot',
       state: {
         players: [{ pid: '1', name: 'Kitchen' }, { pid: '2', name: 'Living Room' }],
+        zones: [
+          { name: 'Upstairs', pids: ['1', '2'] },
+        ],
+        activeZones: [],
         activePids: [],
         nowPlaying: null,
+        nowPlayingByPid: {},
         volumes: {},
         spotifyConnected: true,
       },
@@ -69,37 +74,48 @@ afterEach(() => {
 describe('App smoke', () => {
   it('renders zones once the WS snapshot arrives', async () => {
     renderApp();
-    await waitFor(() => expect(screen.getByText('Kitchen')).toBeInTheDocument());
-    expect(screen.getByText('Living Room')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     expect(connectWS).toHaveBeenCalled();
   });
 
   it('updates state when a follow-up WS snapshot arrives', async () => {
     renderApp();
-    await waitFor(() => expect(screen.getByText('Kitchen')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     act(() => {
       onMessageCb({
         type: 'snapshot',
         state: {
           players: [{ pid: '9', name: 'Patio' }],
+          zones: [{ name: 'Porch', pids: ['9'] }],
+          activeZones: [],
           activePids: [],
           nowPlaying: null,
+          nowPlayingByPid: {},
           volumes: {},
           spotifyConnected: true,
         },
       });
     });
-    expect(screen.getByText('Patio')).toBeInTheDocument();
+    expect(screen.getByText('Porch')).toBeInTheDocument();
   });
 
   it('shows the Spotify-connect banner when spotifyConnected is false', async () => {
     renderApp();
     // Override the snapshot the mocked connectWS just queued.
-    await waitFor(() => expect(screen.getByText('Kitchen')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     act(() => {
       onMessageCb({
         type: 'snapshot',
-        state: { players: [], activePids: [], nowPlaying: null, volumes: {}, spotifyConnected: false },
+        state: {
+          players: [],
+          zones: [],
+          activeZones: [],
+          activePids: [],
+          nowPlaying: null,
+          nowPlayingByPid: {},
+          volumes: {},
+          spotifyConnected: false,
+        },
       });
     });
     await waitFor(() => expect(screen.getByText(/Spotify isn't connected/)).toBeInTheDocument());
@@ -107,17 +123,17 @@ describe('App smoke', () => {
 
   it('applies a WS change event by reducing into snap', async () => {
     renderApp();
-    await waitFor(() => expect(screen.getByText('Kitchen')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     act(() => {
-      onMessageCb({ type: 'change', change: { type: 'players', players: [{ pid: '7', name: 'Garage' }] } });
+      onMessageCb({ type: 'change', change: { type: 'zones', zones: [{ name: 'Garage', pids: ['7'] }] } });
     });
     expect(screen.getByText('Garage')).toBeInTheDocument();
-    expect(screen.queryByText('Kitchen')).not.toBeInTheDocument();
+    expect(screen.queryByText('Upstairs')).not.toBeInTheDocument();
   });
 
   it('cleans up the WS connection on unmount', async () => {
     const { unmount } = renderApp();
-    await waitFor(() => expect(screen.getByText('Kitchen')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     unmount();
     expect(wsCloseSpy).toHaveBeenCalled();
   });
@@ -128,7 +144,7 @@ describe('App smoke', () => {
 describe('App does not call api.state() during mount', () => {
   it('mounts without calling the REST snapshot endpoint', async () => {
     renderApp();
-    await waitFor(() => expect(screen.getByText('Kitchen')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     expect(api.state).not.toHaveBeenCalled();
   });
 });

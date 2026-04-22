@@ -21,11 +21,11 @@ async function jsonFetch(url, init) {
 
 export const api = {
   state: () => jsonFetch('/api/state'),
-  setActive: (pids) =>
+  setActive: (zones) =>
     jsonFetch('/api/zones/active', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pids }),
+      body: JSON.stringify({ zones }),
     }),
   search: (q, opts) => jsonFetch(`/api/search?q=${encodeURIComponent(q)}`, opts),
   play: (body) =>
@@ -34,17 +34,17 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
-  control: (action) =>
+  control: (action, value) =>
     jsonFetch('/api/control', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify(value === undefined ? { action } : { action, value }),
     }),
-  setVolume: (pid, level) =>
+  setVolume: (zone, level) =>
     jsonFetch('/api/volume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pid, level }),
+      body: JSON.stringify({ zone, level }),
     }),
   playbackPosition: () => jsonFetch('/api/playback/position'),
   seek: (ms) =>

@@ -51,12 +51,15 @@ function waitFor(predicate, { timeout = 1000 } = {}) {
 describe('WebSocket /ws', () => {
   it('sends a snapshot on connection', async () => {
     ctx.state.setPlayers([{ pid: '1', name: 'K' }]);
-    ctx.state.setActive(['1']);
+    ctx.state.setZones([{ name: 'Upstairs', pids: ['1'] }]);
+    ctx.state.setActiveZones(['Upstairs']);
     const { ws, messages, opened } = connectClient();
     await opened;
     await waitFor(() => messages.length >= 1);
     expect(messages[0].type).toBe('snapshot');
     expect(messages[0].state.players).toEqual([{ pid: '1', name: 'K' }]);
+    expect(messages[0].state.zones).toEqual([{ name: 'Upstairs', pids: ['1'] }]);
+    expect(messages[0].state.activeZones).toEqual(['Upstairs']);
     expect(messages[0].state.spotifyConnected).toBe(true);
     ws.close();
   });
@@ -87,9 +90,10 @@ describe('WebSocket /ws', () => {
     a.ws.close();
     await waitFor(() => a.ws.readyState === WebSocket.CLOSED);
 
-    ctx.state.setActive(['1']);
-    await waitFor(() => b.messages.some((m) => m.type === 'change' && m.change?.type === 'active'));
-    expect(a.messages.some((m) => m.type === 'change' && m.change?.type === 'active')).toBe(false);
+    ctx.state.setZones([{ name: 'Upstairs', pids: ['1'] }]);
+    ctx.state.setActiveZones(['Upstairs']);
+    await waitFor(() => b.messages.some((m) => m.type === 'change' && m.change?.type === 'activeZones'));
+    expect(a.messages.some((m) => m.type === 'change' && m.change?.type === 'activeZones')).toBe(false);
     b.ws.close();
   });
 });

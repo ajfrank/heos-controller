@@ -5,16 +5,26 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import { buildTestApp } from '../helpers/build-test-app.js';
 
+// Seed convenience: most tests want a player + a zone wrapping that player so
+// /api/zones/active and /api/play have something to grab. Default zone name
+// is the player name capitalised; pass explicit zones if you need otherwise.
+function seedPlayersAndZones(state, players, zones) {
+  state.setPlayers(players);
+  state.setZones(zones || players.map((p) => ({ name: p.name, pids: [p.pid] })));
+}
+
 describe('GET /api/state', () => {
   it('returns the state snapshot plus spotifyConnected', async () => {
     const { app, state } = buildTestApp();
-    state.setPlayers([{ pid: '1', name: 'K' }]);
-    state.setActive(['1']);
+    seedPlayersAndZones(state, [{ pid: '1', name: 'K' }]);
+    state.setActiveZones(['K']);
     state.setVolume('1', 50);
     const res = await request(app).get('/api/state');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       players: [{ pid: '1', name: 'K' }],
+      zones: [{ name: 'K', pids: ['1'] }],
+      activeZones: ['K'],
       activePids: ['1'],
       volumes: { 1: 50 },
       spotifyConnected: true,
@@ -23,69 +33,70 @@ describe('GET /api/state', () => {
 });
 
 describe('POST /api/zones/active', () => {
-  it('400s when pids is missing', async () => {
+  it('400s when zones is missing', async () => {
     const { app } = buildTestApp();
     const res = await request(app).post('/api/zones/active').send({});
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/pids/);
+    expect(res.body.error).toMatch(/zones/);
   });
 
-  it('400s when pids contains a falsy entry', async () => {
-    const { app } = buildTestApp();
-    const res = await request(app).post('/api/zones/active').send({ pids: ['1', ''] });
-    expect(res.status).toBe(400);
-  });
-
-  it('updates state and calls heos.applyGroup with the pids', async () => {
+  it('updates state and calls heos.applyGroup with the resolved pids', async () => {
     const { app, heos, state } = buildTestApp();
-    state.setPlayers([{ pid: '1', name: 'A' }, { pid: '2', name: 'B' }]);
-    const res = await request(app).post('/api/zones/active').send({ pids: ['1', '2'] });
+    seedPlayersAndZones(state,
+      [{ pid: '1', name: 'A' }, { pid: '2', name: 'B' }],
+      [{ name: 'Upstairs', pids: ['1', '2'] }],
+    );
+    const res = await request(app).post('/api/zones/active').send({ zones: ['Upstairs'] });
     expect(res.status).toBe(200);
+    expect(state.activeZones).toEqual(['Upstairs']);
     expect(state.activePids).toEqual(['1', '2']);
     expect(heos.applyGroup).toHaveBeenCalledWith(['1', '2']);
   });
 
   it('500s with the heos error message when applyGroup throws', async () => {
     const { app, state } = buildTestApp({ heos: { applyGroup: vi.fn().mockRejectedValue(new Error('group fail')) } });
-    state.setPlayers([{ pid: '1', name: 'A' }]);
-    const res = await request(app).post('/api/zones/active').send({ pids: ['1'] });
+    seedPlayersAndZones(state, [{ pid: '1', name: 'A' }]);
+    const res = await request(app).post('/api/zones/active').send({ zones: ['A'] });
     expect(res.status).toBe(500);
     expect(res.body.error).toBe('group fail');
   });
 
   // T1.2: client+server stay consistent on applyGroup failure. Without rollback,
-  // a 500 leaves state.activePids holding pids the user already abandoned, and
-  // the next /api/play acts on stale zones.
-  it('rolls back state.activePids when applyGroup rejects', async () => {
+  // a 500 leaves state.activeZones holding zones the user already abandoned,
+  // and the next /api/play acts on stale zones.
+  it('rolls back state.activeZones when applyGroup rejects', async () => {
     const { app, state } = buildTestApp({
       heos: { applyGroup: vi.fn().mockRejectedValue(new Error('syserrno=-9')) },
     });
-    state.setPlayers([{ pid: '1', name: 'A' }, { pid: '2', name: 'B' }]);
-    state.setActive(['1']);
-    const res = await request(app).post('/api/zones/active').send({ pids: ['1', '2'] });
+    seedPlayersAndZones(state,
+      [{ pid: '1', name: 'A' }, { pid: '2', name: 'B' }],
+      [{ name: 'Upstairs', pids: ['1'] }, { name: 'Porch', pids: ['2'] }],
+    );
+    state.setActiveZones(['Upstairs']);
+    const res = await request(app).post('/api/zones/active').send({ zones: ['Upstairs', 'Porch'] });
     expect(res.status).toBe(500);
-    // setActive was attempted optimistically, then reverted to the prior pids.
-    expect(state.activePids).toEqual(['1']);
+    // setActiveZones was attempted optimistically, then reverted to the prior selection.
+    expect(state.activeZones).toEqual(['Upstairs']);
   });
 
   it('rolls back to an empty selection when no zones were previously active', async () => {
     const { app, state } = buildTestApp({
       heos: { applyGroup: vi.fn().mockRejectedValue(new Error('boom')) },
     });
-    state.setPlayers([{ pid: '1', name: 'A' }]);
+    seedPlayersAndZones(state, [{ pid: '1', name: 'A' }]);
     // No prior selection.
-    const res = await request(app).post('/api/zones/active').send({ pids: ['1'] });
+    const res = await request(app).post('/api/zones/active').send({ zones: ['A'] });
     expect(res.status).toBe(500);
-    expect(state.activePids).toEqual([]);
+    expect(state.activeZones).toEqual([]);
   });
 
-  // M3: stale clients can submit pids the server no longer knows about.
-  it('400s with the unknown pid name when a pid is not in state.players', async () => {
+  // M3: stale clients can submit zone names the server no longer knows about.
+  it('400s with the unknown zone name when a zone is not in state.zones', async () => {
     const { app, state } = buildTestApp();
-    state.setPlayers([{ pid: '1', name: 'A' }]);
-    const res = await request(app).post('/api/zones/active').send({ pids: ['1', 'ghost'] });
+    seedPlayersAndZones(state, [{ pid: '1', name: 'A' }]);
+    const res = await request(app).post('/api/zones/active').send({ zones: ['A', 'Ghost'] });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/ghost/);
+    expect(res.body.error).toMatch(/Ghost/);
   });
 });
 
@@ -116,9 +127,10 @@ describe('GET /api/search', () => {
 });
 
 describe('POST /api/play', () => {
-  function seed(state, players, pids) {
+  function seed(state, players, activeZoneNames, zones) {
     state.setPlayers(players);
-    state.setActive(pids);
+    state.setZones(zones || players.map((p) => ({ name: p.name, pids: [p.pid] })));
+    if (activeZoneNames) state.setActiveZones(activeZoneNames);
   }
 
   it('400s when no zones are active', async () => {
@@ -130,7 +142,7 @@ describe('POST /api/play', () => {
 
   it('400s when uri is missing', async () => {
     const { app, state } = buildTestApp();
-    state.setActive(['1']);
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
     const res = await request(app).post('/api/play').send({});
     expect(res.status).toBe(400);
   });
@@ -139,7 +151,7 @@ describe('POST /api/play', () => {
   // Validate at the entry point so the error is actionable.
   it('400s on a malformed uri instead of forwarding it to Spotify', async () => {
     const { app, state, spotify } = buildTestApp();
-    state.setActive(['1']);
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
     const res = await request(app).post('/api/play').send({ uri: 'junk' });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Spotify URI/i);
@@ -155,8 +167,7 @@ describe('POST /api/play', () => {
     'spotify:show:s1',
   ])('accepts valid Spotify URI %s', async (uri) => {
     const { app, state, spotify } = buildTestApp();
-    state.setPlayers([{ pid: '1', name: 'Bar' }]);
-    state.setActive(['1']);
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
     spotify.getDevices.mockResolvedValue([{ id: 'd', name: 'Bar' }]);
     const res = await request(app).post('/api/play').send({ uri });
     expect(res.status).toBe(200);
@@ -171,7 +182,7 @@ describe('POST /api/play', () => {
     'spotify::abc',
   ])('rejects invalid uri %s', async (uri) => {
     const { app, state } = buildTestApp();
-    state.setActive(['1']);
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
     const res = await request(app).post('/api/play').send({ uri });
     expect(res.status).toBe(400);
   });
@@ -179,15 +190,10 @@ describe('POST /api/play', () => {
   // T1.4: when the Spotify call throws the SPOTIFY_REAUTH_REQUIRED sentinel,
   // routes translate it to 401 + code:'reauth' so the UI flips its banner.
   it('returns 401 + code:"reauth" when Spotify throws SPOTIFY_REAUTH_REQUIRED', async () => {
-    const { app, state, spotify } = buildTestApp();
-    state.setPlayers([{ pid: '1', name: 'Bar' }]);
-    state.setActive(['1']);
-    spotify.getDevices.mockRejectedValue(new Error('SPOTIFY_REAUTH_REQUIRED'));
     // Cache a deviceId so the route still has a leader and reaches the
     // transferPlayback step where reauth is surfaced.
     const ctx2 = buildTestApp();
-    ctx2.state.setPlayers([{ pid: '1', name: 'Bar' }]);
-    ctx2.state.setActive(['1']);
+    seed(ctx2.state, [{ pid: '1', name: 'Bar' }], ['Bar']);
     ctx2.store['spotify-devices.json'] = { '1': 'd-cached' };
     ctx2.spotify.transferPlayback.mockRejectedValue(new Error('SPOTIFY_REAUTH_REQUIRED'));
     const res = await request(ctx2.app).post('/api/play').send({ uri: 'spotify:track:abc' });
@@ -205,7 +211,7 @@ describe('POST /api/play', () => {
 
   it('404s with a clear message when no zone is visible AND no cached deviceId exists', async () => {
     const { app, state, spotify } = buildTestApp();
-    seed(state, [{ pid: '1', name: 'Bar' }], ['1']);
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
     spotify.getDevices.mockResolvedValue([{ id: 'd-other', name: 'Echo Dot' }]);
     const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
     expect(res.status).toBe(404);
@@ -218,7 +224,7 @@ describe('POST /api/play', () => {
     const { app, state, spotify, heos, store } = buildTestApp();
     // Seed the cache as if we'd previously played to "Bar" successfully.
     store['spotify-devices.json'] = { '1': 'd-bar' };
-    seed(state, [{ pid: '1', name: 'Bar' }], ['1']);
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
     // Spotify currently sees nothing relevant (speaker idle).
     spotify.getDevices.mockResolvedValue([{ id: 'd-other', name: 'Echo Dot' }]);
     const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
@@ -232,7 +238,7 @@ describe('POST /api/play', () => {
 
   it('caches the deviceId after a successful live play so future taps can wake it', async () => {
     const { app, state, spotify, store } = buildTestApp();
-    seed(state, [{ pid: '1', name: 'Bar' }], ['1']);
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
     spotify.getDevices.mockResolvedValue([{ id: 'd-bar', name: 'Bar' }]);
     await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
     expect(store['spotify-devices.json']).toEqual({ '1': 'd-bar' });
@@ -245,7 +251,7 @@ describe('POST /api/play', () => {
       spotify: { transferPlayback: vi.fn().mockRejectedValue(new Error('Spotify API failed: 404 Device not found')) },
     });
     store['spotify-devices.json'] = { '1': 'd-stale' };
-    seed(state, [{ pid: '1', name: 'Bar' }], ['1']);
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
     spotify.getDevices.mockResolvedValue([]);
     const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
     expect(res.status).toBe(404);
@@ -262,7 +268,7 @@ describe('POST /api/play', () => {
         { pid: '2', name: 'Living Room' },
         { pid: '3', name: 'Kitchen' },
       ],
-      ['1'],
+      ['Bar'],
     );
     // Active=Bar; Spotify also sees Living Room and Kitchen → those IDs should
     // get cached as a side effect so future taps can wake them too.
@@ -287,7 +293,7 @@ describe('POST /api/play', () => {
         { pid: '1', name: 'Bar' },
         { pid: '2', name: 'Living Room' },
       ],
-      ['1'],
+      ['Bar'],
     );
     // Active=Bar (not visible). Living Room is visible — seed it so the next
     // tap that targets Living Room can wake without phone help.
@@ -299,13 +305,15 @@ describe('POST /api/play', () => {
 
   it('promotes the matched zone to group leader and transfers playback', async () => {
     const { app, state, spotify, heos } = buildTestApp();
+    // All three speakers in one zone so they're all in activePids.
     seed(state,
       [
         { pid: '1', name: 'Bar' },
         { pid: '2', name: 'Living Room' },
         { pid: '3', name: 'Kitchen' },
       ],
-      ['1', '2', '3'],
+      ['All'],
+      [{ name: 'All', pids: ['1', '2', '3'] }],
     );
     spotify.getDevices.mockResolvedValue([{ id: 'd-living', name: 'Living Room' }]);
     const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
@@ -317,7 +325,7 @@ describe('POST /api/play', () => {
 
   it('uses contextUri for non-track URIs (playlists, albums)', async () => {
     const { app, state, spotify } = buildTestApp();
-    seed(state, [{ pid: '1', name: 'Living Room' }], ['1']);
+    seed(state, [{ pid: '1', name: 'Living Room' }], ['Living Room']);
     spotify.getDevices.mockResolvedValue([{ id: 'd-living', name: 'Living Room' }]);
     await request(app).post('/api/play').send({ uri: 'spotify:playlist:xyz' });
     expect(spotify.play).toHaveBeenCalledWith('d-living', { contextUri: 'spotify:playlist:xyz' });
@@ -325,7 +333,7 @@ describe('POST /api/play', () => {
 
   it('matches device names case-insensitively and trims whitespace', async () => {
     const { app, state, spotify } = buildTestApp();
-    seed(state, [{ pid: '1', name: 'Living Room' }], ['1']);
+    seed(state, [{ pid: '1', name: 'Living Room' }], ['Living Room']);
     spotify.getDevices.mockResolvedValue([{ id: 'd', name: '  living room  ' }]);
     const res = await request(app).post('/api/play').send({ uri: 'spotify:track:1' });
     expect(res.status).toBe(200);
@@ -334,7 +342,7 @@ describe('POST /api/play', () => {
 
   it('falls back to substring match when no exact device name matches', async () => {
     const { app, state, spotify } = buildTestApp();
-    seed(state, [{ pid: '1', name: 'Bar' }], ['1']);
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
     spotify.getDevices.mockResolvedValue([{ id: 'd', name: 'Bar Speaker' }]);
     await request(app).post('/api/play').send({ uri: 'spotify:track:1' });
     expect(spotify.transferPlayback).toHaveBeenCalledWith('d', false);
@@ -349,7 +357,8 @@ describe('POST /api/control', () => {
     ['previous', 'playPrevious'],
   ])('action=%s calls heos.%s', async (action, method) => {
     const { app, heos, state } = buildTestApp();
-    state.setActive(['1']);
+    seedPlayersAndZones(state, [{ pid: '1', name: 'Bar' }]);
+    state.setActiveZones(['Bar']);
     const res = await request(app).post('/api/control').send({ action });
     expect(res.status).toBe(200);
     expect(heos[method]).toHaveBeenCalled();
@@ -357,7 +366,8 @@ describe('POST /api/control', () => {
 
   it('400s on unknown action', async () => {
     const { app, state } = buildTestApp();
-    state.setActive(['1']);
+    seedPlayersAndZones(state, [{ pid: '1', name: 'Bar' }]);
+    state.setActiveZones(['Bar']);
     const res = await request(app).post('/api/control').send({ action: 'eject' });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/unknown action/);
@@ -372,23 +382,37 @@ describe('POST /api/control', () => {
 
 describe('POST /api/volume', () => {
   it('400s when level is not a number', async () => {
-    const { app } = buildTestApp();
-    const res = await request(app).post('/api/volume').send({ pid: '1', level: 'loud' });
+    const { app, state } = buildTestApp();
+    seedPlayersAndZones(state, [{ pid: '1', name: 'Bar' }]);
+    const res = await request(app).post('/api/volume').send({ zone: 'Bar', level: 'loud' });
     expect(res.status).toBe(400);
   });
 
-  it('400s when pid is missing', async () => {
+  it('400s when zone is missing', async () => {
     const { app } = buildTestApp();
     const res = await request(app).post('/api/volume').send({ level: 50 });
     expect(res.status).toBe(400);
   });
 
-  it('calls heos.setVolume and updates state on success', async () => {
+  it('400s when zone is not in state.zones', async () => {
+    const { app } = buildTestApp();
+    const res = await request(app).post('/api/volume').send({ zone: 'Ghost', level: 50 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Ghost/);
+  });
+
+  it('calls heos.setVolume for every pid in the zone and updates state on success', async () => {
     const { app, heos, state } = buildTestApp();
-    const res = await request(app).post('/api/volume').send({ pid: '1', level: 70 });
+    seedPlayersAndZones(state,
+      [{ pid: '1', name: 'A' }, { pid: '2', name: 'B' }],
+      [{ name: 'Upstairs', pids: ['1', '2'] }],
+    );
+    const res = await request(app).post('/api/volume').send({ zone: 'Upstairs', level: 70 });
     expect(res.status).toBe(200);
     expect(heos.setVolume).toHaveBeenCalledWith('1', 70);
+    expect(heos.setVolume).toHaveBeenCalledWith('2', 70);
     expect(state.volumes['1']).toBe(70);
+    expect(state.volumes['2']).toBe(70);
   });
 });
 
@@ -411,7 +435,8 @@ describe('POST /api/play rollback on transferPlayback failure', () => {
       { pid: '1', name: 'Bar' },
       { pid: '2', name: 'Living Room' },
     ]);
-    state.setActive(['1', '2']);
+    state.setZones([{ name: 'Both', pids: ['1', '2'] }]);
+    state.setActiveZones(['Both']);
     spotify.getDevices.mockResolvedValue([{ id: 'd-bar', name: 'Bar' }]);
 
     const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
@@ -431,7 +456,8 @@ describe('POST /api/play rollback on transferPlayback failure', () => {
       spotify: { transferPlayback: vi.fn().mockRejectedValue(new Error('nope')) },
     });
     state.setPlayers([{ pid: '1', name: 'Bar' }, { pid: '2', name: 'Living Room' }]);
-    state.setActive(['1', '2']);
+    state.setZones([{ name: 'Both', pids: ['1', '2'] }]);
+    state.setActiveZones(['Both']);
     spotify.getDevices.mockResolvedValue([{ id: 'd-bar', name: 'Bar' }]);
 
     const res = await request(app).post('/api/play').send({ uri: 'spotify:track:1' });
@@ -447,16 +473,17 @@ describe('POST /api/play rollback on transferPlayback failure', () => {
 describe('response shape conformance', () => {
   it('action successes include ok: true', async () => {
     const { app, state, spotify } = buildTestApp();
-    state.setPlayers([{ pid: '1', name: 'Bar' }]);
+    seedPlayersAndZones(state, [{ pid: '1', name: 'Bar' }]);
+    state.setActiveZones(['Bar']);
     spotify.getDevices.mockResolvedValue([{ id: 'd', name: 'Bar' }]);
     spotify.search.mockResolvedValue({ tracks: { items: [] } });
 
     const responses = await Promise.all([
-      request(app).post('/api/zones/active').send({ pids: ['1'] }),
+      request(app).post('/api/zones/active').send({ zones: ['Bar'] }),
       request(app).get('/api/search?q=hi'),
       request(app).post('/api/play').send({ uri: 'spotify:track:1' }),
       request(app).post('/api/control').send({ action: 'play' }),
-      request(app).post('/api/volume').send({ pid: '1', level: 50 }),
+      request(app).post('/api/volume').send({ zone: 'Bar', level: 50 }),
     ]);
     for (const res of responses) {
       expect(res.status).toBe(200);
@@ -486,8 +513,8 @@ describe('response shape conformance', () => {
 describe('POST /api/play recents log (F1)', () => {
   function setup() {
     const ctx = buildTestApp();
-    ctx.state.setPlayers([{ pid: '1', name: 'Bar' }]);
-    ctx.state.setActive(['1']);
+    seedPlayersAndZones(ctx.state, [{ pid: '1', name: 'Bar' }]);
+    ctx.state.setActiveZones(['Bar']);
     ctx.spotify.getDevices.mockResolvedValue([{ id: 'd', name: 'Bar' }]);
     return ctx;
   }
@@ -574,7 +601,8 @@ describe('recents persistence', () => {
 describe('readiness gate', () => {
   it('503s /api/play before setHeosReady is called', async () => {
     const { app, state } = buildTestApp({ ready: false });
-    state.setActive(['1']);
+    seedPlayersAndZones(state, [{ pid: '1', name: 'Bar' }]);
+    state.setActiveZones(['Bar']);
     const res = await request(app).post('/api/play').send({ uri: 'spotify:track:1' });
     expect(res.status).toBe(503);
     expect(res.body.error).toMatch(/starting up/);
@@ -582,7 +610,7 @@ describe('readiness gate', () => {
 
   it('503s /api/zones/active and /api/control before ready', async () => {
     const { app } = buildTestApp({ ready: false });
-    expect((await request(app).post('/api/zones/active').send({ pids: ['1'] })).status).toBe(503);
+    expect((await request(app).post('/api/zones/active').send({ zones: ['Bar'] })).status).toBe(503);
     expect((await request(app).post('/api/control').send({ action: 'play' })).status).toBe(503);
   });
 
@@ -600,10 +628,11 @@ describe('readiness gate', () => {
 
   it('passes through after setHeosReady is called', async () => {
     const { app, state } = buildTestApp({ ready: false });
-    state.setPlayers([{ pid: '1', name: 'A' }]);
+    seedPlayersAndZones(state, [{ pid: '1', name: 'A' }]);
     app.locals.setHeosReady();
-    const res = await request(app).post('/api/zones/active').send({ pids: ['1'] });
+    const res = await request(app).post('/api/zones/active').send({ zones: ['A'] });
     expect(res.status).toBe(200);
+    expect(state.activeZones).toEqual(['A']);
     expect(state.activePids).toEqual(['1']);
   });
 });

@@ -27,8 +27,14 @@ vi.mock('../../web/src/api.js', () => ({
       type: 'snapshot',
       state: {
         players: [{ pid: '1', name: 'Bar' }, { pid: '2', name: 'Basement' }],
+        zones: [
+          { name: 'Downstairs', pids: ['1'] },
+          { name: 'Basement', pids: ['2'] },
+        ],
+        activeZones: ['Downstairs'],
         activePids: ['1'],
         nowPlaying: null,
+        nowPlayingByPid: {},
         volumes: { 1: 50, 2: 50 },
         spotifyConnected: true,
         recents: [],
@@ -59,7 +65,7 @@ describe('zone rollback (F6)', () => {
     renderApp();
     await waitFor(() => expect(screen.getByText('Basement')).toBeInTheDocument());
 
-    // Bar is initially active (✓ shown). Click Basement to add it.
+    // Downstairs is initially active (✓ shown). Click Basement to add it.
     const basementBtn = screen.getByRole('button', { name: /Basement/ });
     await user.click(basementBtn);
 
@@ -72,9 +78,9 @@ describe('zone rollback (F6)', () => {
     // Banner explains the failure persistently.
     expect(screen.getByText(/Group not allowed|syserrno=-9/i)).toBeInTheDocument();
 
-    // Bar's selection state survives the rollback.
-    const barBtn = screen.getByRole('button', { name: /^Bar/ });
-    expect(barBtn.getAttribute('aria-pressed')).toBe('true');
+    // Downstairs's selection state survives the rollback.
+    const downstairsBtn = screen.getByRole('button', { name: /Downstairs/ });
+    expect(downstairsBtn.getAttribute('aria-pressed')).toBe('true');
   });
 
   it('keeps the toggle when setActive resolves', async () => {
@@ -85,7 +91,7 @@ describe('zone rollback (F6)', () => {
 
     await user.click(screen.getByRole('button', { name: /Basement/ }));
     await waitFor(() => {
-      expect(api.setActive).toHaveBeenCalledWith(['1', '2']);
+      expect(api.setActive).toHaveBeenCalledWith(['Downstairs', 'Basement']);
     });
     const btn = screen.getByRole('button', { name: /Basement/ });
     expect(btn.getAttribute('aria-pressed')).toBe('true');

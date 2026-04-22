@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { readJson, writeJson } from './persist.js';
 import { findMatchingDevice } from './wake.js';
 import { REAUTH_SENTINEL } from './spotify.js';
+import { resolveZones } from './zones.js';
 
 // Centralized error → response translation for routes that touch Spotify.
 // REAUTH_SENTINEL → 401 + code:'reauth' so the UI can flip the banner without
@@ -78,28 +79,28 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
   });
 
   app.post('/api/zones/active', async (req, res) => {
-    const { pids } = req.body;
-    if (!Array.isArray(pids) || pids.some((p) => !p)) {
-      return res.status(400).json({ error: 'pids must be a non-empty string array' });
+    const { zones } = req.body;
+    if (!Array.isArray(zones)) {
+      return res.status(400).json({ error: 'zones must be an array of zone names' });
     }
-    // Reject pids the server doesn't know about — guards against stale clients
-    // and obvious tampering before we hand the values to HEOS.
-    const known = new Set(state.players.map((p) => String(p.pid)));
-    const unknown = pids.map(String).filter((p) => !known.has(p));
+    const known = new Set(state.zones.map((z) => z.name));
+    const unknown = zones.map(String).filter((z) => !known.has(z));
     if (unknown.length) {
-      return res.status(400).json({ error: `unknown pid(s): ${unknown.join(', ')}` });
+      return res.status(400).json({ error: `unknown zone(s): ${unknown.join(', ')}` });
     }
     // Snapshot prior selection BEFORE optimistic update so we can roll back
     // if HEOS rejects the regroup. Without this, the client rolls back its
-    // own optimistic toggle but the server keeps the new pids — the next
+    // own optimistic toggle but the server keeps the new selection — the next
     // /api/play then acts on zones the user already abandoned.
-    const prior = state.activePids.slice();
-    state.setActive(pids);
+    const prior = state.activeZones.slice();
+    state.setActiveZones(zones);
     try {
-      await getH().applyGroup(pids);
+      // Empty selection = best-effort no-op (don't issue an empty set_group).
+      const pids = state.activePids;
+      if (pids.length) await getH().applyGroup(pids);
       res.json({ ok: true });
     } catch (e) {
-      state.setActive(prior);
+      state.setActiveZones(prior);
       res.status(500).json({ error: e.message });
     }
   });
@@ -343,8 +344,19 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
   });
 
   app.post('/api/control', async (req, res) => {
-    const { action } = req.body;
+    const { action, value } = req.body;
     try {
+      // Shuffle/repeat go straight to Spotify — playback state lives there
+      // when we're driving via Spotify Connect, and HEOS's set_play_mode
+      // doesn't propagate to the Spotify session.
+      if (action === 'shuffle') {
+        await spotify.setShuffle(!!value);
+        return res.json({ ok: true });
+      }
+      if (action === 'repeat') {
+        await spotify.setRepeat(value);
+        return res.json({ ok: true });
+      }
       const pid = state.activePids[0];
       if (!pid) return res.status(400).json({ error: 'No active zones' });
       const h = getH();
@@ -355,17 +367,23 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       else return res.status(400).json({ error: 'unknown action' });
       res.json({ ok: true });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      sendErr(res, e);
     }
   });
 
   app.post('/api/volume', async (req, res) => {
-    const { pid, level } = req.body;
+    const { zone, level } = req.body;
     if (typeof level !== 'number') return res.status(400).json({ error: 'level required' });
-    if (!pid) return res.status(400).json({ error: 'pid required' });
+    if (!zone) return res.status(400).json({ error: 'zone required' });
+    const z = state.zones.find((x) => x.name === zone);
+    if (!z) return res.status(400).json({ error: `unknown zone: ${zone}` });
     try {
-      await getH().setVolume(pid, level);
-      state.setVolume(pid, level);
+      // Master volume = set every speaker in the zone to the same level.
+      // HEOS group sync mirrors audio but NOT volume; each speaker's level
+      // is independent. Parallel calls — HEOS handles concurrent set_volume
+      // on a single connection.
+      await Promise.all(z.pids.map((pid) => getH().setVolume(pid, level)));
+      for (const pid of z.pids) state.setVolume(pid, level);
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -551,6 +569,7 @@ export async function initHeosState({ heos, state, log = console }) {
   // (e.g. ZoneGrid's activePids.includes(p.pid)) and the leader-broadcast
   // guard in setNowPlaying. Normalize once here so downstream can assume strings.
   state.setPlayers(players.map((p) => ({ pid: String(p.pid), name: p.name, model: p.model, ip: p.ip })));
+  state.setZones(resolveZones(state.players, log));
   // Hydrate per-player metadata in parallel; HEOS happily handles concurrent
   // requests on a single connection, and serial round-trips were the slowest
   // part of bootstrap on a 4-zone setup.
@@ -581,6 +600,7 @@ export function wireHeosEvents({ heos, state, log = console }) {
       if (cmd === 'event/players_changed') {
         const players = await heos.getPlayers();
         state.setPlayers(players.map((p) => ({ pid: String(p.pid), name: p.name, model: p.model, ip: p.ip })));
+        state.setZones(resolveZones(state.players, log));
       } else if (cmd === 'event/player_now_playing_changed' && params.pid) {
         // Fetch play state alongside the new media so the play/pause button
         // doesn't flash to "Play" between this event and the next state event.

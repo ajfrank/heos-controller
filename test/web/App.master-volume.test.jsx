@@ -29,8 +29,14 @@ vi.mock('../../web/src/api.js', () => ({
       type: 'snapshot',
       state: {
         players: [{ pid: '1', name: 'A' }, { pid: '2', name: 'B' }],
+        zones: [
+          { name: 'Upstairs', pids: ['1'] },
+          { name: 'Porch', pids: ['2'] },
+        ],
+        activeZones: ['Upstairs', 'Porch'],
         activePids: ['1', '2'],
         nowPlaying: null,
+        nowPlayingByPid: {},
         volumes: { 1: 20, 2: 40 },
         spotifyConnected: true,
       },
@@ -70,13 +76,13 @@ describe('App master volume', () => {
     await waitFor(() => expect(screen.getByTestId('np')).toHaveTextContent('master=30'));
   });
 
-  it('drag to 60 fires per-zone setVolume for each active pid', async () => {
+  it('drag to 60 fires per-zone setVolume for each active zone', async () => {
     renderApp();
     await waitFor(() => expect(screen.getByTestId('np')).toHaveTextContent('master=30'));
     act(() => { lastNowPlayingProps.onMasterVolume(60); });
     await waitFor(() => expect(screen.getByTestId('np')).toHaveTextContent('master=60'));
-    expect(api.setVolume).toHaveBeenCalledWith('1', 60);
-    expect(api.setVolume).toHaveBeenCalledWith('2', 60);
+    expect(api.setVolume).toHaveBeenCalledWith('Upstairs', 60);
+    expect(api.setVolume).toHaveBeenCalledWith('Porch', 60);
   });
 
   it('a WS volume_changed for one pid does NOT yank the displayed master mid-drag', async () => {

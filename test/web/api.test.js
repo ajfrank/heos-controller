@@ -45,14 +45,14 @@ describe('api.state', () => {
 });
 
 describe('api.setActive', () => {
-  it('POSTs /api/zones/active with pids in JSON body', async () => {
+  it('POSTs /api/zones/active with zones in JSON body', async () => {
     fetchMock.mockReturnValueOnce(ok({ ok: true }));
-    await api.setActive(['1', '2']);
+    await api.setActive(['Upstairs', 'Porch']);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/zones/active');
     expect(init.method).toBe('POST');
     expect(init.headers['Content-Type']).toBe('application/json');
-    expect(JSON.parse(init.body)).toEqual({ pids: ['1', '2'] });
+    expect(JSON.parse(init.body)).toEqual({ zones: ['Upstairs', 'Porch'] });
   });
 });
 
@@ -86,12 +86,12 @@ describe('api.control', () => {
 });
 
 describe('api.setVolume', () => {
-  it('POSTs /api/volume with pid + level', async () => {
+  it('POSTs /api/volume with zone + level', async () => {
     fetchMock.mockReturnValueOnce(ok({ ok: true }));
-    await api.setVolume('1', 50);
+    await api.setVolume('Upstairs', 50);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/volume');
-    expect(JSON.parse(init.body)).toEqual({ pid: '1', level: 50 });
+    expect(JSON.parse(init.body)).toEqual({ zone: 'Upstairs', level: 50 });
   });
 });
 

@@ -326,6 +326,17 @@ export async function seek(positionMs) {
   return api(`/me/player/seek?position_ms=${ms}`, { method: 'PUT' });
 }
 
+/** @param {boolean} on */
+export async function setShuffle(on) {
+  return api(`/me/player/shuffle?state=${on ? 'true' : 'false'}`, { method: 'PUT' });
+}
+
+/** @param {'off'|'context'|'track'} mode */
+export async function setRepeat(mode) {
+  if (!['off', 'context', 'track'].includes(mode)) throw new Error('invalid repeat mode');
+  return api(`/me/player/repeat?state=${mode}`, { method: 'PUT' });
+}
+
 /** @returns {Promise<object>} Spotify user profile. */
 export async function getMe() {
   return api('/me');
@@ -351,6 +362,8 @@ export async function getPlayback() {
     artist,
     album: item.album?.name || '',
     image_url: item.album?.images?.[0]?.url || '',
+    shuffle_state: !!r.shuffle_state,
+    repeat_state: r.repeat_state || 'off',
   };
 }
 

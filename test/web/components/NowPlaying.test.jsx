@@ -31,18 +31,18 @@ describe('NowPlaying', () => {
     expect(screen.getByText('Nirvana')).toBeInTheDocument();
   });
 
-  it('shows the Play label when state is paused/empty and Pause when playing', () => {
+  it('exposes Play/Pause via aria-label depending on play state', () => {
     const { rerender } = renderNP({
       nowPlaying: { song: 'X', artist: 'Y', state: 'pause' },
       onControl: vi.fn(),
     });
-    expect(screen.getByText(/Play/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Play')).toBeInTheDocument();
     rerender(
       <HeroUIProvider>
         <NowPlaying nowPlaying={{ song: 'X', artist: 'Y', state: 'play' }} onControl={vi.fn()} />
       </HeroUIProvider>,
     );
-    expect(screen.getByText(/Pause/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Pause')).toBeInTheDocument();
   });
 
   it('fires onControl(previous|play|next) for each transport button', async () => {
@@ -53,7 +53,7 @@ describe('NowPlaying', () => {
       onControl,
     });
     await user.click(screen.getByLabelText('Previous'));
-    await user.click(screen.getByText(/Play/));
+    await user.click(screen.getByLabelText('Play'));
     await user.click(screen.getByLabelText('Next'));
     expect(onControl.mock.calls.map((c) => c[0])).toEqual(['previous', 'play', 'next']);
   });
@@ -65,7 +65,7 @@ describe('NowPlaying', () => {
       nowPlaying: { song: 'X', artist: 'Y', state: 'playing' },
       onControl,
     });
-    await user.click(screen.getByText(/Pause/));
+    await user.click(screen.getByLabelText('Pause'));
     expect(onControl).toHaveBeenCalledWith('pause');
   });
 
@@ -77,7 +77,6 @@ describe('NowPlaying', () => {
       onMasterVolume: vi.fn(),
     });
     expect(screen.getByLabelText('Master volume')).toBeInTheDocument();
-    expect(screen.getByText('55')).toBeInTheDocument();
   });
 
   it('hides the master volume slider when masterVolume is null', () => {

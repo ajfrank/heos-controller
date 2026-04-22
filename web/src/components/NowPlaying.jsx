@@ -2,6 +2,20 @@ import React, { useEffect, useState } from 'react';
 import { Button, Image, Slider } from '@heroui/react';
 import { AnimatePresence, motion } from 'framer-motion';
 
+// Apple-Music-style slider: thin neutral track, white fill, small white thumb.
+// Every layer of the HeroUI Slider is overridden so the default primary tint
+// can never bleed through — keeps contrast constant across album accents.
+const sliderClassNames = {
+  base: 'gap-0',
+  track: 'bg-white/15 border-0 h-1',
+  filler: 'bg-white',
+  // Touch target stays generous via the after pseudo (HIG ~44pt) without
+  // making the visible thumb feel chunky.
+  thumb: 'w-3.5 h-3.5 bg-white border-0 shadow-sm after:bg-transparent after:w-9 after:h-9 data-[dragging=true]:scale-110',
+};
+
+const REPEAT_CYCLE = { off: 'context', context: 'track', track: 'off' };
+
 export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMasterVolume, onMasterVolumeEnd, playback, onSeek, onKillSession }) {
   const np = nowPlaying || {};
   const hasTrack = np.song || np.title;
@@ -13,9 +27,11 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
   const progressMs = useInterpolatedProgress(playback);
   const durationMs = playback?.duration_ms ?? 0;
   const showBar = hasTrack && durationMs > 0;
+  const shuffleOn = !!playback?.shuffle_state;
+  const repeatMode = playback?.repeat_state || 'off';
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <div className="flex items-center gap-4">
         <div className="relative w-20 h-20 shrink-0">
           <AnimatePresence mode="popLayout">
@@ -51,11 +67,11 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
         >
           {hasTrack ? (
             <>
-              <p className="font-semibold text-lg truncate">{title}</p>
-              <p className="text-small text-default-500 truncate">{artist}</p>
+              <p className="font-semibold text-lg truncate leading-tight">{title}</p>
+              <p className="text-small text-white/60 truncate mt-0.5">{artist}</p>
             </>
           ) : (
-            <p className="text-default-500">Nothing playing — pick a zone and search for music.</p>
+            <p className="text-white/60">Nothing playing — pick a zone and search for music.</p>
           )}
         </motion.div>
         {onKillSession && (
@@ -67,18 +83,17 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
             aria-label="Kill Spotify session"
             title="Force-stop Spotify on whichever device has it"
             onPress={onKillSession}
-            className="text-default-400 opacity-60 hover:opacity-100 shrink-0"
+            className="text-white/40 hover:text-white/80 shrink-0"
           >
-            ⏻
+            <PowerIcon className="w-4 h-4" />
           </Button>
         )}
       </div>
 
       {showBar && (
-        <div className="flex flex-col gap-1 -mt-1">
+        <div className="flex flex-col gap-1.5">
           <Slider
             aria-label="Track progress"
-            color="primary"
             size="sm"
             radius="full"
             minValue={0}
@@ -86,78 +101,197 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
             step={1000}
             value={Math.min(progressMs, durationMs)}
             onChangeEnd={(v) => onSeek?.(Array.isArray(v) ? v[0] : v)}
-            classNames={{
-              track: 'h-1.5',
-              filler: 'h-1.5',
-              // Visual thumb stays modest, but the touch target grows via after:
-              // pseudo so the iPad hit area meets HIG (~44pt). Keeps the bar
-              // looking thin while making seek/scrub usable under a thumb.
-              thumb: 'w-5 h-5 after:w-5 after:h-5',
-            }}
+            classNames={sliderClassNames}
           />
-          <div className="flex justify-between text-tiny text-default-500 tabular-nums px-0.5">
+          <div className="flex justify-between text-tiny text-white/50 tabular-nums px-0.5">
             <span>{fmtTime(progressMs)}</span>
             <span>{fmtTime(durationMs)}</span>
           </div>
         </div>
       )}
 
-      <div className="flex gap-2">
-        <Button
-          isIconOnly
-          variant="flat"
-          radius="lg"
-          size="lg"
-          aria-label="Previous"
-          onPress={() => onControl('previous')}
-          className="text-xl"
+      {/* Transport row, Apple-Music style: bare icon buttons centered, with a
+          single filled circular play button as the focal point. No button
+          group, no segmented background — the spacing alone groups them. */}
+      <div className="flex items-center justify-between max-w-md mx-auto w-full px-2">
+        <TransportIconButton
+          label={shuffleOn ? 'Shuffle on' : 'Shuffle off'}
+          pressed={shuffleOn}
+          onPress={() => onControl('shuffle', !shuffleOn)}
         >
-          ‹‹
-        </Button>
-        <Button
-          color="primary"
-          radius="lg"
-          size="lg"
-          // Shadow follows the F7 accent so a recolored UI doesn't keep
-          // glowing Spotify-green over (e.g.) a deep-blue album cover.
-          // Underscores inside arbitrary values become spaces at build time,
-          // so this resolves to: shadow: 0 4px 18px hsl(var(--heroui-primary) / 0.35)
-          className="flex-1 font-semibold tracking-wide shadow-[0_4px_18px_hsl(var(--heroui-primary)_/_0.35)]"
+          <ShuffleIcon className="w-5 h-5" />
+        </TransportIconButton>
+
+        <TransportIconButton label="Previous" onPress={() => onControl('previous')}>
+          <PrevIcon className="w-7 h-7" />
+        </TransportIconButton>
+
+        <PlayPauseButton
+          isPlaying={isPlaying}
           onPress={() => onControl(isPlaying ? 'pause' : 'play')}
+        />
+
+        <TransportIconButton label="Next" onPress={() => onControl('next')}>
+          <NextIcon className="w-7 h-7" />
+        </TransportIconButton>
+
+        <TransportIconButton
+          label={`Repeat ${repeatMode}`}
+          pressed={repeatMode !== 'off'}
+          onPress={() => onControl('repeat', REPEAT_CYCLE[repeatMode] || 'off')}
         >
-          {isPlaying ? '❚❚  Pause' : '▶  Play'}
-        </Button>
-        <Button
-          isIconOnly
-          variant="flat"
-          radius="lg"
-          size="lg"
-          aria-label="Next"
-          onPress={() => onControl('next')}
-          className="text-xl"
-        >
-          ››
-        </Button>
+          {repeatMode === 'track' ? <RepeatOneIcon className="w-5 h-5" /> : <RepeatIcon className="w-5 h-5" />}
+        </TransportIconButton>
       </div>
 
       {masterVolume != null && (
-        <Slider
-          aria-label="Master volume"
-          color="primary"
-          size="md"
-          radius="lg"
-          minValue={0}
-          maxValue={100}
-          step={1}
-          value={masterVolume}
-          onChange={(v) => onMasterVolume(Array.isArray(v) ? v[0] : v)}
-          onChangeEnd={() => onMasterVolumeEnd?.()}
-          startContent={<span className="text-small text-default-500 w-14">Volume</span>}
-          endContent={<span className="text-small text-default-500 w-8 text-right tabular-nums">{masterVolume}</span>}
-          classNames={{ base: 'mt-1' }}
-        />
+        <div className="flex items-center gap-3">
+          <VolumeLowIcon className="w-4 h-4 text-white/50 shrink-0" />
+          <Slider
+            aria-label="Master volume"
+            size="sm"
+            radius="full"
+            minValue={0}
+            maxValue={100}
+            step={1}
+            value={masterVolume}
+            onChange={(v) => onMasterVolume(Array.isArray(v) ? v[0] : v)}
+            onChangeEnd={() => onMasterVolumeEnd?.()}
+            classNames={{ ...sliderClassNames, base: 'gap-0 flex-1' }}
+          />
+          <VolumeHighIcon className="w-4 h-4 text-white/50 shrink-0" />
+        </div>
       )}
     </div>
+  );
+}
+
+// Bare icon button, no chrome. Pressed state lights the icon with the album
+// accent so the F7 recolor still shows up somewhere; off state is muted white.
+function TransportIconButton({ label, pressed, onPress, children }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={pressed ?? undefined}
+      onClick={onPress}
+      className={[
+        'inline-flex items-center justify-center w-11 h-11 rounded-full transition-colors',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40',
+        'active:scale-95 transition-transform',
+        pressed ? 'text-primary' : 'text-white/85 hover:text-white',
+      ].join(' ')}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Spotify-style filled white play/pause. Always white-on-black so it reads
+// instantly regardless of the album-accent recolor. Slight grow on press.
+function PlayPauseButton({ isPlaying, onPress }) {
+  return (
+    <motion.button
+      type="button"
+      aria-label={isPlaying ? 'Pause' : 'Play'}
+      onClick={onPress}
+      whileTap={{ scale: 0.92 }}
+      transition={{ type: 'spring', stiffness: 500, damping: 22 }}
+      className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-white text-black shadow-lg hover:bg-white/95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+    >
+      {isPlaying ? <PauseIcon className="w-6 h-6" /> : <PlayIcon className="w-6 h-6 ml-0.5" />}
+    </motion.button>
+  );
+}
+
+// --- Inline SVG icons ---------------------------------------------------------
+// Hand-rolled to keep the bundle thin and avoid a runtime icon-font dependency.
+// All are stroke-based at 1.75px to match Apple Music's transport set; play/
+// pause are filled because they're the focal control.
+
+function PlayIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  );
+}
+function PauseIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
+      <rect x="6" y="5" width="4" height="14" rx="1" />
+      <rect x="14" y="5" width="4" height="14" rx="1" />
+    </svg>
+  );
+}
+function PrevIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
+      <path d="M6 6h2v12H6zM20 6v12L9.5 12z" />
+    </svg>
+  );
+}
+function NextIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
+      <path d="M16 6h2v12h-2zM4 6v12l10.5-6z" />
+    </svg>
+  );
+}
+function ShuffleIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M16 3h5v5" />
+      <path d="M4 20L21 3" />
+      <path d="M21 16v5h-5" />
+      <path d="M15 15l6 6" />
+      <path d="M4 4l5 5" />
+    </svg>
+  );
+}
+function RepeatIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M17 1l4 4-4 4" />
+      <path d="M3 11V9a4 4 0 014-4h14" />
+      <path d="M7 23l-4-4 4-4" />
+      <path d="M21 13v2a4 4 0 01-4 4H3" />
+    </svg>
+  );
+}
+function RepeatOneIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M17 1l4 4-4 4" />
+      <path d="M3 11V9a4 4 0 014-4h14" />
+      <path d="M7 23l-4-4 4-4" />
+      <path d="M21 13v2a4 4 0 01-4 4H3" />
+      <path d="M11 11l1-1v4" />
+    </svg>
+  );
+}
+function VolumeLowIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+    </svg>
+  );
+}
+function VolumeHighIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+      <path d="M15.5 8.5a5 5 0 010 7" />
+      <path d="M19 5a9 9 0 010 14" />
+    </svg>
+  );
+}
+function PowerIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M12 3v9" />
+      <path d="M5.5 7a8 8 0 1013 0" />
+    </svg>
   );
 }
 

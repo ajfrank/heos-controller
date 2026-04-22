@@ -4,6 +4,8 @@
 export function applyChange(cur, change) {
   switch (change.type) {
     case 'players': return { ...cur, players: change.players };
+    case 'zones': return { ...cur, zones: change.zones };
+    case 'activeZones': return { ...cur, activeZones: change.activeZones };
     case 'active': return { ...cur, activePids: change.activePids };
     case 'nowPlaying': return { ...cur, nowPlaying: change.nowPlaying };
     case 'nowPlayingByPid': {
