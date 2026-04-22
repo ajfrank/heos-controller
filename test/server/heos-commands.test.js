@@ -146,6 +146,27 @@ describe('HeosClient.applyGroup', () => {
     expect(sock.written.some((w) => w.includes('group/set_group?pid=1111,2222,3333'))).toBe(true);
   });
 
+  it('retries set_group once on eid=13 (HEOS busy with internal state change)', async () => {
+    // Repro: user starts a song in one zone (Spotify Connect wakes the
+    // speaker; HEOS fires its own internal commands), then immediately
+    // toggles zones. The first set_group lands while HEOS is still
+    // processing the wake fallout and gets eid=13. _doApplyGroup must
+    // sleep briefly and retry once so the user never sees the error.
+    const { client, sock } = await connectedClient();
+    let call = 0;
+    sock.onWrite(() => {
+      const i = call++;
+      if (i === 0) return FRAME.getGroups_kitchenLR;
+      if (i === 1) return FRAME.setGroup_eid13;
+      return FRAME.setGroup_success;
+    });
+    const p = client.applyGroup([1111, 2222, 3333]);
+    await vi.advanceTimersByTimeAsync(900);
+    await p;
+    const setCalls = sock.written.filter((w) => w.includes('group/set_group?pid=1111,2222,3333'));
+    expect(setCalls.length).toBe(2);
+  });
+
   it('coalesces concurrent applyGroup calls — only the latest pids run after the in-flight one finishes', async () => {
     // Regression: HEOS rejects overlapping group/set_group with eid=13.
     // applyGroup must serialize: at most one in flight, queue collapses to

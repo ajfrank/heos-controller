@@ -37,6 +37,10 @@ export const FRAME = {
     heos: { command: 'group/set_group', result: 'fail', message: 'eid=12&text=System error&syserrno=-9' },
   }) + '\r\n',
 
+  setGroup_eid13: JSON.stringify({
+    heos: { command: 'group/set_group', result: 'fail', message: 'eid=13&text=Processing previous command' },
+  }) + '\r\n',
+
   getVolume_42: JSON.stringify({
     heos: { command: 'player/get_volume', result: 'success', message: 'pid=1111&level=42' },
   }) + '\r\n',

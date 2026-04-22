@@ -179,12 +179,15 @@ class HeosClient extends EventEmitter {
             "These zones can't be grouped together — they likely share a multi-zone amp, or one is offline. Try a different combination."
           ));
         } else if (/eid=13/.test(msg)) {
-          // Some other client (e.g. the HEOS app on a phone) is mid-command.
-          // applyGroup serializes our own calls, so this path is the
-          // cross-client race. Surface a hint instead of the raw eid.
-          target.reject(new Error(
+          // "Processing previous command". Hits when HEOS is mid-internal-state
+          // change (e.g. just woke a speaker via Spotify Connect, or another
+          // client is acting). _doApplyGroup catches EID13 and retries once
+          // before surfacing the friendlier message.
+          const err = new Error(
             "HEOS is busy processing another command — give it a second and try again."
-          ));
+          );
+          err.code = 'EID13';
+          target.reject(err);
         } else if (cmd === 'group/set_group' && /eid=7/.test(msg)) {
           // "Command Couldn't Be Executed" — usually a transient speaker state
           // (just woke from Spotify Connect, mid-handoff, etc.). _doApplyGroup
@@ -359,16 +362,25 @@ class HeosClient extends EventEmitter {
       //       group. Ungroup the leader first to clear (b), then retry. A
       //       short delay also covers (a). One retry only — if it still
       //       fails, surface the friendlier message from _onData.
-      if (e.code !== 'EID7') throw e;
-      const leader = pids[0];
-      const leaderGroup = groups.find((g) =>
-        (g.players || []).some((p) => idStr(p.pid) === idStr(leader)),
-      );
-      if (leaderGroup && (leaderGroup.players || []).length > 1) {
-        try { await this.setGroup([leader]); } catch { /* best-effort */ }
+      if (e.code === 'EID7') {
+        const leader = pids[0];
+        const leaderGroup = groups.find((g) =>
+          (g.players || []).some((p) => idStr(p.pid) === idStr(leader)),
+        );
+        if (leaderGroup && (leaderGroup.players || []).length > 1) {
+          try { await this.setGroup([leader]); } catch { /* best-effort */ }
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+        return this.setGroup(pids);
       }
-      await new Promise((r) => setTimeout(r, 1500));
-      return this.setGroup(pids);
+      // eid=13 = "Processing previous command". HEOS is busy with an internal
+      // state change (often Spotify Connect wake fallout). Wait briefly and
+      // retry once — the busy window is typically <1s.
+      if (e.code === 'EID13') {
+        await new Promise((r) => setTimeout(r, 800));
+        return this.setGroup(pids);
+      }
+      throw e;
     }
   }
 
