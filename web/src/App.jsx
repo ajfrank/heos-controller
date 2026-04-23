@@ -147,6 +147,50 @@ export default function App() {
     }
   }
 
+  // Per-zone slider debounce: same justification as the master volume above.
+  // ZoneGrid's onChange fires ~30/s and the server fans each call out to every
+  // pid in the zone, so a 4-speaker zone drag was 120 HEOS commands/s without
+  // this. The optimistic state still moves immediately on every tick (so the
+  // slider thumb tracks the finger); only the network call coalesces.
+  // onChangeEnd from HeroUI Slider flushes the trailing edge on finger-up.
+  const zonePending = useRef(new Map());      // name → latest level
+  const zoneFanoutTimers = useRef(new Map()); // name → timeout id
+  const ZONE_DEBOUNCE_MS = 80;
+  function flushZoneFanout(zoneName) {
+    const t = zoneFanoutTimers.current.get(zoneName);
+    if (t) {
+      clearTimeout(t);
+      zoneFanoutTimers.current.delete(zoneName);
+    }
+    if (!zonePending.current.has(zoneName)) return;
+    const level = zonePending.current.get(zoneName);
+    zonePending.current.delete(zoneName);
+    setZoneVolume(zoneName, level);
+  }
+  function setZoneVolumeDebounced(zoneName, level) {
+    // Move the slider immediately so the thumb tracks the finger; the
+    // setZoneVolume call inside flushZoneFanout will re-apply the same
+    // optimistic update + run the network request.
+    const zone = snap.zones.find((z) => z.name === zoneName);
+    if (zone) {
+      setSnap((cur) => {
+        const next = { ...cur.volumes };
+        for (const pid of zone.pids) next[pid] = level;
+        return { ...cur, volumes: next };
+      });
+    }
+    zonePending.current.set(zoneName, level);
+    const existing = zoneFanoutTimers.current.get(zoneName);
+    if (existing) clearTimeout(existing);
+    zoneFanoutTimers.current.set(
+      zoneName,
+      setTimeout(() => flushZoneFanout(zoneName), ZONE_DEBOUNCE_MS),
+    );
+  }
+  function endZoneVolumeDrag(zoneName) {
+    flushZoneFanout(zoneName);
+  }
+
   // Master volume = average across every active-zone speaker; slider drag
   // overrides locally so an incoming WS volume_changed event can't yank the
   // thumb out of the user's finger.
@@ -319,7 +363,8 @@ export default function App() {
                   : [...snap.activeZones, name];
                 setActiveZones(next);
               }}
-              onVolume={setZoneVolume}
+              onVolume={setZoneVolumeDebounced}
+              onVolumeEnd={endZoneVolumeDrag}
             />
           </CardBody>
         </Card>

@@ -576,8 +576,19 @@ export function attachWebSocket(server, { state, spotify }) {
     },
   });
 
+  // ws emits 'error' on socket-level failures (RST, half-open detected on
+  // write, encoder rejection). With no listener Node escalates to an uncaught
+  // exception and the whole controller exits — saw this in practice when an
+  // iPad with the PWA backgrounded racing a snapshot send. One listener per
+  // client; payload is per-client noise so warn, don't error.
+  function safeSend(ws, msg) {
+    try { ws.send(msg); }
+    catch (e) { console.warn('[ws] send failed:', e.code || e.message); }
+  }
+
   wss.on('connection', (ws) => {
-    ws.send(JSON.stringify({
+    ws.on('error', (e) => console.warn('[ws] client error:', e.code || e.message));
+    safeSend(ws, JSON.stringify({
       type: 'snapshot',
       state: { ...state.snapshot(), spotifyConnected: spotify.isConnected() },
     }));
@@ -586,7 +597,7 @@ export function attachWebSocket(server, { state, spotify }) {
   const onChange = (change) => {
     const msg = JSON.stringify({ type: 'change', change });
     for (const ws of wss.clients) {
-      if (ws.readyState === ws.OPEN) ws.send(msg);
+      if (ws.readyState === ws.OPEN) safeSend(ws, msg);
     }
   };
   // Force-resync signal: server has discovered the local view of HEOS group
@@ -598,7 +609,7 @@ export function attachWebSocket(server, { state, spotify }) {
       state: { ...state.snapshot(), spotifyConnected: spotify.isConnected() },
     });
     for (const ws of wss.clients) {
-      if (ws.readyState === ws.OPEN) ws.send(msg);
+      if (ws.readyState === ws.OPEN) safeSend(ws, msg);
     }
   };
   state.on('change', onChange);

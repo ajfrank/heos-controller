@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 // Card itself is no longer pressable. Only the header button toggles the zone,
 // so dragging the slider can't accidentally fire onToggle via react-aria's
 // pointerup/keyboard press capture.
-export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid = {}, wsReady = true, onToggle, onVolume }) {
+export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid = {}, wsReady = true, onToggle, onVolume, onVolumeEnd }) {
   // Pre-snapshot: show a quiet "Connecting…" so a slow WS handshake doesn't
   // read as a broken app. Empty zones AFTER the first snapshot is a legitimate
   // "no zones found" state — we let it through.
@@ -107,6 +107,7 @@ export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid 
                           step={1}
                           value={masterVol}
                           onChange={(v) => onVolume(z.name, Array.isArray(v) ? v[0] : v)}
+                          onChangeEnd={() => onVolumeEnd?.(z.name)}
                           className="flex-1"
                           classNames={{
                             base: 'gap-0',
