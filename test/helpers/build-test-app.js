@@ -33,6 +33,9 @@ export function buildTestApp(overrides = {}) {
     getPlayback: vi.fn().mockResolvedValue(null),
     seek: vi.fn().mockResolvedValue(undefined),
     pauseActive: vi.fn().mockResolvedValue(null),
+    // Album-context play resolves the parent album URI; default mock returns
+    // a synthetic album so the play handler can build a context+offset body.
+    getTrack: vi.fn().mockResolvedValue({ album: { uri: 'spotify:album:default' } }),
     getAuthUrl: vi.fn().mockReturnValue('https://accounts.spotify.com/authorize?fake=1'),
     exchangeCode: vi.fn().mockResolvedValue(undefined),
     _accessTokenForDebug: vi.fn().mockResolvedValue('fake-token'),

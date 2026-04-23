@@ -372,3 +372,15 @@ export async function getMyPlaylists() {
   const r = await api('/me/playlists?limit=20');
   return r?.items || [];
 }
+
+/**
+ * Look up a single track. Used by /api/play to resolve a track's parent album,
+ * so we can play the track inside its album context (offset = track URI). That
+ * lets Spotify's account-level Autoplay extend with similar songs after the
+ * album finishes — bare `uris: [track]` plays the one track and stops.
+ * @param {string} trackId
+ * @returns {Promise<object>} Spotify track object including album.uri.
+ */
+export async function getTrack(trackId) {
+  return api(`/tracks/${encodeURIComponent(trackId)}`);
+}

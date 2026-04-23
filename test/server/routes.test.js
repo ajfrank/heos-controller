@@ -233,7 +233,12 @@ describe('POST /api/play', () => {
     expect(heos.applyGroup).toHaveBeenCalledWith(['1']);
     // Wake path uses play=true to start playback in one round trip.
     expect(spotify.transferPlayback).toHaveBeenCalledWith('d-bar', true);
-    expect(spotify.play).toHaveBeenCalledWith('d-bar', { uris: ['spotify:track:abc'] });
+    // Track plays inside its album context with offset, so Spotify's account-
+    // level Autoplay extends with similar songs after the album ends.
+    expect(spotify.play).toHaveBeenCalledWith('d-bar', {
+      contextUri: 'spotify:album:default',
+      offsetUri: 'spotify:track:abc',
+    });
   });
 
   it('caches the deviceId after a successful live play so future taps can wake it', async () => {
@@ -320,7 +325,10 @@ describe('POST /api/play', () => {
     expect(res.status).toBe(200);
     expect(heos.applyGroup).toHaveBeenCalledWith(['2', '1', '3']);
     expect(spotify.transferPlayback).toHaveBeenCalledWith('d-living', false);
-    expect(spotify.play).toHaveBeenCalledWith('d-living', { uris: ['spotify:track:abc'] });
+    expect(spotify.play).toHaveBeenCalledWith('d-living', {
+      contextUri: 'spotify:album:default',
+      offsetUri: 'spotify:track:abc',
+    });
   });
 
   it('uses contextUri for non-track URIs (playlists, albums)', async () => {
@@ -329,6 +337,52 @@ describe('POST /api/play', () => {
     spotify.getDevices.mockResolvedValue([{ id: 'd-living', name: 'Living Room' }]);
     await request(app).post('/api/play').send({ uri: 'spotify:playlist:xyz' });
     expect(spotify.play).toHaveBeenCalledWith('d-living', { contextUri: 'spotify:playlist:xyz' });
+  });
+
+  // Autoplay extension: tracks play inside their album context with offset, so
+  // Spotify's account-level Autoplay extends with similar songs after the album
+  // ends. getTrack is called with the bare track id (no spotify:track: prefix).
+  it('looks up the track album and plays it as context+offset', async () => {
+    const { app, state, spotify } = buildTestApp({
+      spotify: { getTrack: vi.fn().mockResolvedValue({ album: { uri: 'spotify:album:florence' } }) },
+    });
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
+    spotify.getDevices.mockResolvedValue([{ id: 'd-bar', name: 'Bar' }]);
+    const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc123' });
+    expect(res.status).toBe(200);
+    expect(spotify.getTrack).toHaveBeenCalledWith('abc123');
+    expect(spotify.play).toHaveBeenCalledWith('d-bar', {
+      contextUri: 'spotify:album:florence',
+      offsetUri: 'spotify:track:abc123',
+    });
+  });
+
+  it('falls back to bare uris when the album lookup throws (deleted track / blip)', async () => {
+    const origWarn = console.warn;
+    console.warn = vi.fn();
+    try {
+      const { app, state, spotify } = buildTestApp({
+        spotify: { getTrack: vi.fn().mockRejectedValue(new Error('track lookup boom')) },
+      });
+      seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
+      spotify.getDevices.mockResolvedValue([{ id: 'd-bar', name: 'Bar' }]);
+      const res = await request(app).post('/api/play').send({ uri: 'spotify:track:gone' });
+      expect(res.status).toBe(200);
+      // The play tap still succeeds; we just lose the autoplay extension.
+      expect(spotify.play).toHaveBeenCalledWith('d-bar', { uris: ['spotify:track:gone'] });
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  it('falls back to bare uris when the track has no album.uri', async () => {
+    const { app, state, spotify } = buildTestApp({
+      spotify: { getTrack: vi.fn().mockResolvedValue({ album: null }) },
+    });
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
+    spotify.getDevices.mockResolvedValue([{ id: 'd-bar', name: 'Bar' }]);
+    await request(app).post('/api/play').send({ uri: 'spotify:track:noalbum' });
+    expect(spotify.play).toHaveBeenCalledWith('d-bar', { uris: ['spotify:track:noalbum'] });
   });
 
   it('matches device names case-insensitively and trims whitespace', async () => {

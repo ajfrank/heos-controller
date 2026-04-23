@@ -304,7 +304,25 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
           await new Promise((r) => setTimeout(r, 1000));
           await spotify.transferPlayback(resolvedDeviceId, wakePath);
         }
-        const playArgs = uri.includes(':track:') ? { uris: [uri] } : { contextUri: uri };
+        // For tracks: play inside the album context with offset, so Spotify's
+        // account-level Autoplay extends with similar songs after the album
+        // ends. Bare `uris: [track]` plays the one track and stops. If the
+        // album lookup fails (deleted track, network blip), fall back to the
+        // bare URI so the tap still plays something.
+        let playArgs;
+        if (uri.includes(':track:')) {
+          let albumUri = null;
+          try {
+            const trackId = uri.split(':').pop();
+            const track = await spotify.getTrack(trackId);
+            albumUri = track?.album?.uri || null;
+          } catch (e) {
+            console.warn('[spotify] album lookup failed, falling back to single-track play:', e.message);
+          }
+          playArgs = albumUri ? { contextUri: albumUri, offsetUri: uri } : { uris: [uri] };
+        } else {
+          playArgs = { contextUri: uri };
+        }
         await spotify.play(resolvedDeviceId, playArgs);
       } catch (playErr) {
         // If the cached deviceId is stale (speaker reset, account changed),

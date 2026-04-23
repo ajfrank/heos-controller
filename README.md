@@ -42,6 +42,14 @@ The server auto-discovers a HEOS speaker via SSDP. If discovery is flaky on your
 HEOS_HOST=192.168.1.42
 ```
 
+### 5. Turn on Spotify Autoplay (recommended)
+
+When you tap a track in this app, the server plays it inside its album context with a track offset — exactly what the official Spotify app does. If Spotify's account-level **Autoplay** is on, playback will keep going after the album ends with a stream of similar songs, just like a Spotify radio. There's no API to toggle it, so flip it once in the Spotify app:
+
+> Spotify → Settings → Playback → **Autoplay similar songs when your music ends**
+
+It's per-account, not per-device, so doing it once on any phone covers every speaker.
+
 ## Running
 
 ```sh
