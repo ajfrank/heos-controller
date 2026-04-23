@@ -318,15 +318,17 @@ export default function App() {
       return;
     }
     if (!snap.zones.length) return;
+    // Don't gate on play-state. HEOS get_play_state can come back null at
+    // hydration (transient query failure on a sleeping speaker), leaving
+    // np.state undefined even though the speaker has perfectly valid queued
+    // metadata. ZoneGrid happily shows that song line — the auto-select
+    // should match and pick the zone too.
     const songToZones = new Map();
     for (const z of snap.zones) {
       const leader = z.pids[0];
       if (!leader) continue;
       const np = snap.nowPlayingByPid[leader];
       if (!np) continue;
-      const st = (np.state || '').toLowerCase();
-      const playable = st === 'play' || st === 'playing' || st === 'pause' || st === 'paused';
-      if (!playable) continue;
       const song = np.song || np.title;
       if (!song) continue;
       const cur = songToZones.get(song) || [];
