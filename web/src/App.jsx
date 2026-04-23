@@ -449,11 +449,19 @@ export default function App() {
 
   async function stopEverywhere() {
     try {
-      await api.stopAll();
+      const r = await api.stopAll();
       // Server clears active zones, so the next snapshot/change reconciles
       // the UI; in the meantime, clear locally so the button hides immediately.
       setSnap((cur) => ({ ...cur, activeZones: [] }));
-      showToast('Stopped');
+      // If the user just tapped a song before stopping, the optimistic overlay
+      // would otherwise sit for ~10s past the stop (Spotify never advances
+      // past the stale picked song). Drop it now — the bottom card will fall
+      // back to whatever Spotify last reported.
+      setPickedOptimistic(null);
+      // Honest signal when HEOS pause failed silently — speakers may keep playing
+      // even though we cleared the selection. Toast nudges the user to verify.
+      if (r?.partial) showToast('Stop sent — check speakers', 'error');
+      else showToast('Stopped');
     } catch (e) {
       showToast(e.message, 'error');
     }
@@ -501,12 +509,13 @@ export default function App() {
                   <motion.button
                     type="button"
                     key="stop-all"
+                    aria-label="Stop all zones"
                     initial={{ opacity: 0, scale: 0.9 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.9 }}
                     transition={{ duration: 0.12 }}
                     onClick={stopEverywhere}
-                    className="text-tiny font-semibold tracking-wide text-white/55 hover:text-white px-1.5 py-0.5 rounded transition-colors"
+                    className="text-tiny font-semibold tracking-wide text-white/55 hover:text-white px-1.5 py-0.5 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
                   >
                     Stop all
                   </motion.button>
