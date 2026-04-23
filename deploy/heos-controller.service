@@ -18,10 +18,17 @@ Wants=network-online.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/heos-controller
-EnvironmentFile=/home/pi/heos-controller/.env
+# Leading `-` makes a missing .env non-fatal — the unit boots and the UI
+# surfaces the existing "Spotify isn't connected" banner instead of failing
+# to start with a confusing systemd error.
+EnvironmentFile=-/home/pi/heos-controller/.env
 ExecStart=/usr/bin/node server/index.js
 Restart=on-failure
 RestartSec=5
+# Throttle: after 5 failures in 5 minutes, hold the unit `failed` so a tight
+# crash loop doesn't pin the CPU or fill journald on the SD card.
+StartLimitBurst=5
+StartLimitIntervalSec=300
 StandardOutput=journal
 StandardError=journal
 

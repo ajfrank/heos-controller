@@ -32,17 +32,37 @@ function startDeviceCachePoll() {
   cachePollTimer = setInterval(tick, DEVICE_CACHE_POLL_MS);
 }
 
-server.listen(PORT, '0.0.0.0', async () => {
+// Retry HEOS init on failure with linear backoff capped at 60s. Without this,
+// a Pi that boots before the speakers do (cold-power-on after a power blip)
+// would leave the HTTP server up but unusable: the catch path runs once,
+// /healthz reports 503 forever, and systemd's Restart=on-failure never fires
+// because the process is "healthy" from its POV. The retry keeps the HTTP
+// server alive (so /healthz still reports 503 to any external monitor) and
+// reconnects unattended once the speakers are reachable.
+let heosInitAttempt = 0;
+async function initHeos() {
+  heosInitAttempt += 1;
+  heosClient = await getHeos();
+  await initHeosState({ heos: heosClient, state });
+  app.locals.setHeosReady();
+  startDeviceCachePoll();
+  heosInitAttempt = 0;
+}
+function scheduleHeosInit() {
+  initHeos().catch((e) => {
+    const delay = Math.min(60_000, heosInitAttempt * 5_000);
+    console.error(`[server] HEOS init failed (attempt ${heosInitAttempt}):`, e.message);
+    if (heosInitAttempt === 1) {
+      console.error('  Hint: make sure a HEOS speaker is on the same network. Set HEOS_HOST=<ip> to skip discovery.');
+    }
+    console.error(`  Retrying in ${delay / 1000}s.`);
+    setTimeout(scheduleHeosInit, delay).unref();
+  });
+}
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`[server] http://localhost:${PORT}`);
-  try {
-    heosClient = await getHeos();
-    await initHeosState({ heos: heosClient, state });
-    app.locals.setHeosReady();
-    startDeviceCachePoll();
-  } catch (e) {
-    console.error('[server] HEOS init failed:', e.message);
-    console.error('  Hint: make sure a HEOS speaker is on the same network. Set HEOS_HOST=<ip> to skip discovery.');
-  }
+  scheduleHeosInit();
 });
 
 // Release the port on hot reload (`node --watch`) and on Ctrl-C; without
