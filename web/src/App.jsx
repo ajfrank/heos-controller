@@ -303,6 +303,46 @@ export default function App() {
   const latestPlaybackSongRef = useRef('');
   useEffect(() => { latestPlaybackSongRef.current = playback?.song || ''; }, [playback?.song]);
 
+  // First-load convenience: if HEOS reports zones already have a track queued
+  // (play or paused) but no zone is selected in the UI, auto-select them so
+  // the play button on the NowPlaying card just works without an extra
+  // zone tap. Group zones by song and pick the largest cluster — handles the
+  // common "all three speakers grouped on the same content" case while
+  // avoiding the edge case where two distinct groups have different content
+  // and merging them would mis-target playback.
+  const autoSelectedRef = useRef(false);
+  useEffect(() => {
+    if (!wsReady || autoSelectedRef.current) return;
+    if (snap.activeZones.length > 0) {
+      autoSelectedRef.current = true; // user/server already has a selection
+      return;
+    }
+    if (!snap.zones.length) return;
+    const songToZones = new Map();
+    for (const z of snap.zones) {
+      const leader = z.pids[0];
+      if (!leader) continue;
+      const np = snap.nowPlayingByPid[leader];
+      if (!np) continue;
+      const st = (np.state || '').toLowerCase();
+      const playable = st === 'play' || st === 'playing' || st === 'pause' || st === 'paused';
+      if (!playable) continue;
+      const song = np.song || np.title;
+      if (!song) continue;
+      const cur = songToZones.get(song) || [];
+      cur.push(z.name);
+      songToZones.set(song, cur);
+    }
+    let best = [];
+    for (const zones of songToZones.values()) {
+      if (zones.length > best.length) best = zones;
+    }
+    if (best.length) {
+      autoSelectedRef.current = true;
+      setActiveZones(best);
+    }
+  }, [wsReady, snap.zones, snap.nowPlayingByPid, snap.activeZones]);
+
   // Foreign-device auto-recovery. Within 10s of a successful play, if Spotify
   // reports the active device is something other than what we transferred to,
   // pause the session and surface a clear toast. Outside that window we trust
