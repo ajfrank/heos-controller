@@ -12,6 +12,15 @@ export default function SearchResults({ onPlay, onError }) {
   const [busy, setBusy] = useState(false);
   const debounce = useRef(null);
 
+  // Picking a result is the natural "I'm done searching" signal — clear the
+  // query so the result list collapses (AnimatePresence exit) and the input
+  // is ready for the next search. The empty-q useEffect below handles
+  // aborting any in-flight request and nulling `results`.
+  function handlePlay(play) {
+    onPlay(play);
+    setQ('');
+  }
+
   // Keep the AbortController for the in-flight query so a stale response from
   // a prior keystroke can't overwrite the current one (race seen during fast
   // typing on a slow connection).
@@ -69,7 +78,7 @@ export default function SearchResults({ onPlay, onError }) {
             >
               {results.items.map((item, i) => (
                 <motion.li key={`${item.play.uri || i}-${i}`} variants={rowVariants}>
-                  <ResultRow item={item} onPlay={onPlay} />
+                  <ResultRow item={item} onPlay={handlePlay} />
                 </motion.li>
               ))}
             </motion.ul>
