@@ -27,11 +27,27 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
   const title = np.song || np.title || '';
   const artist = np.artist || np.station || '';
   const art = np.image_url || '';
-  // Prefer Spotify's is_playing — HEOS state lags 1-2s behind Spotify Connect
-  // transitions (visible after a play/pause tap as a stuck icon). Fall back
-  // to HEOS state when Spotify hasn't reported yet.
+  // The reported play-state lags any tap by 1-2s (HEOS event) up to 5s
+  // (next Spotify poll). To keep the icon responsive, optimistically flip on
+  // press and reconcile when either source reports the new state.
   const stateStr = (np.state || '').toLowerCase();
-  const isPlaying = playback?.is_playing ?? (stateStr === 'play' || stateStr === 'playing');
+  const heosPlaying = stateStr === 'play' || stateStr === 'playing';
+  const reportedPlaying = playback?.is_playing ?? heosPlaying;
+  const [optimistic, setOptimistic] = useState(null);
+  const isPlaying = optimistic ?? reportedPlaying;
+  // Clear the optimistic flag once the real state matches it (or after 4s as
+  // a safety net if neither source ever reports — e.g. Spotify session died).
+  useEffect(() => {
+    if (optimistic == null) return;
+    if (optimistic === reportedPlaying) { setOptimistic(null); return; }
+    const t = setTimeout(() => setOptimistic(null), 4000);
+    return () => clearTimeout(t);
+  }, [optimistic, reportedPlaying]);
+  function togglePlay() {
+    const next = !isPlaying;
+    setOptimistic(next);
+    onControl(next ? 'play' : 'pause');
+  }
   const progressMs = useInterpolatedProgress(playback);
   const durationMs = playback?.duration_ms ?? 0;
   const showBar = hasTrack && durationMs > 0;
@@ -136,7 +152,7 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
 
         <PlayPauseButton
           isPlaying={isPlaying}
-          onPress={() => onControl(isPlaying ? 'pause' : 'play')}
+          onPress={togglePlay}
         />
 
         <TransportIconButton label="Next" onPress={() => onControl('next')}>
