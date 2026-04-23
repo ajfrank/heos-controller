@@ -471,15 +471,22 @@ function usePlaybackProgress({ enabled, playStateHint }) {
         if (cancelled) return;
         const pb = r.playback;
         setSample(pb ? { ...pb, sampledAt: Date.now() } : null);
+        let next;
         if (pb?.is_playing) {
           // Schedule the next poll to land just after the predicted track end.
           // remaining + small buffer = wake right after auto-advance, capped
           // at POLL_MS for very long tracks and floored to avoid pathological
           // sub-second polling near the boundary.
           const remaining = Math.max(0, (pb.duration_ms || 0) - (pb.progress_ms || 0));
-          const next = Math.min(POLL_MS, Math.max(POLL_NEAR_END_MIN_MS, remaining + 400));
-          timer = setTimeout(fetchOnce, next);
+          next = Math.min(POLL_MS, Math.max(POLL_NEAR_END_MIN_MS, remaining + 400));
+        } else {
+          // Idle/paused/between-tracks: keep polling at a slower cadence so an
+          // external resume or autoplay extension (Spotify briefly returns
+          // is_playing=false at the album→radio boundary) is picked up. Without
+          // this the loop would die forever and the bottom card would freeze.
+          next = POLL_MS * 2;
         }
+        timer = setTimeout(fetchOnce, next);
       } catch {
         // Errors are silent — the bar just stops advancing. Surfacing a toast
         // every 5s would be far worse UX than no bar.
