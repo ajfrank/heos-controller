@@ -122,6 +122,16 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     res.json({ ...state.snapshot(), spotifyConnected: spotify.isConnected() });
   });
 
+  // External health check for systemd / uptime monitors. 200 means HEOS is
+  // bootstrapped and we're answering normally; 503 means we're alive but
+  // can't talk to speakers yet (still in the discovery → connect window, or
+  // HEOS reconnect is in progress). Spotify is reported but doesn't gate
+  // health — the controller is still useful as a HEOS-only client.
+  app.get('/healthz', (_req, res) => {
+    const body = { ok: heosReady, heos: heosReady, spotify: spotify.isConnected() };
+    res.status(heosReady ? 200 : 503).json(body);
+  });
+
   app.post('/api/zones/active', async (req, res) => {
     const { zones } = req.body;
     if (!Array.isArray(zones)) {
@@ -488,8 +498,11 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       const out = { tokenStatus: spotify.isConnected() ? 'present' : 'missing' };
       for (const p of ['/me', '/me/player', '/me/player/devices', '/me/devices']) {
         try {
+          // Mirror the 10s timeout that production fetches in spotify.js use,
+          // so a hung Spotify endpoint doesn't pin the debug request forever.
           const r = await fetch(`https://api.spotify.com/v1${p}`, {
             headers: { Authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(10_000),
           });
           const text = await r.text();
           out[p] = { status: r.status, body: safeJson(text) };

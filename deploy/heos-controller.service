@@ -25,5 +25,20 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# Process hardening. The controller is a pure user-space Node app — it
+# doesn't need raw kernel access, /tmp shared with other services, or write
+# access anywhere outside ~/.heos-controller. AF_NETLINK stays so SSDP
+# multicast discovery works.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/.heos-controller
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
 [Install]
 WantedBy=multi-user.target
