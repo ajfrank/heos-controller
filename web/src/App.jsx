@@ -97,12 +97,32 @@ export default function App() {
   // already visible feedback that the first tap registered, so the dropped
   // re-tap is silent.
   const playInflight = useRef(false);
+  // Optimistic now-playing overlay so the bottom card flips to the picked
+  // item the instant the tap registers, instead of waiting up to ~5s for the
+  // next Spotify /me/player poll. Cleared by the effect below once Spotify
+  // catches up (or 10s safety timeout).
+  const [pickedOptimistic, setPickedOptimistic] = useState(null);
+  // Token bumped after every successful /api/play so usePlaybackProgress
+  // re-fetches immediately instead of finishing its current 5s sleep.
+  const [playBumpToken, setPlayBumpToken] = useState(0);
   async function play(itemBody) {
     if (playInflight.current) return;
     if (!snap.activeZones.length) {
       showToast('Select at least one zone first', 'error'); return;
     }
     playInflight.current = true;
+    if (itemBody?.label) {
+      setPickedOptimistic({
+        song: itemBody.label,
+        artist: itemBody.sublabel || '',
+        image_url: itemBody.art || '',
+        // Watermark: clear the overlay once Spotify reports a track different
+        // from whatever was playing at pick time. Using the previous song name
+        // (rather than a wallclock timer alone) means we hold the overlay
+        // exactly as long as Spotify is still showing the stale track.
+        prevSpotifySong: latestPlaybackSongRef.current,
+      });
+    }
     // Auto-wake on the server can take 2-8s when speakers were idle. Show a
     // quiet "Waking…" hint after ~700ms so the wife isn't staring at silence
     // wondering if her tap registered. Cancelled the moment play resolves.
@@ -111,8 +131,10 @@ export default function App() {
       await api.play(itemBody);
       clearTimeout(wakeHint);
       showToast('Playing');
+      setPlayBumpToken((x) => x + 1);
     } catch (e) {
       clearTimeout(wakeHint);
+      setPickedOptimistic(null); // play failed — drop the overlay
       showToast(e.message, 'error');
     } finally {
       playInflight.current = false;
@@ -257,7 +279,27 @@ export default function App() {
   const playback = usePlaybackProgress({
     enabled: snap.spotifyConnected,
     playStateHint: snap.nowPlaying?.state || '',
+    bumpToken: playBumpToken,
   });
+
+  // Mirror the latest Spotify-reported song into a ref so play() can capture
+  // it synchronously as the "stale" watermark for the optimistic overlay.
+  const latestPlaybackSongRef = useRef('');
+  useEffect(() => { latestPlaybackSongRef.current = playback?.song || ''; }, [playback?.song]);
+
+  // Clear the optimistic overlay as soon as Spotify reports a track different
+  // from the one that was playing at pick time — that's our cue that the new
+  // playback has actually landed. 10s safety timeout in case Spotify never
+  // catches up (session migrated, wrong device, etc).
+  useEffect(() => {
+    if (!pickedOptimistic) return;
+    if (playback?.song && playback.song !== pickedOptimistic.prevSpotifySong) {
+      setPickedOptimistic(null);
+      return;
+    }
+    const t = setTimeout(() => setPickedOptimistic(null), 10000);
+    return () => clearTimeout(t);
+  }, [pickedOptimistic, playback?.song]);
 
   // Spotify Connect playback gives HEOS no song/title metadata —
   // get_now_playing_media returns just `{type:'station', station:'Spotify'}`.
@@ -267,6 +309,16 @@ export default function App() {
   // state (which is what triggers the per-zone re-fetch upstream).
   const displayedNowPlaying = useMemo(() => {
     const heos = snap.nowPlaying;
+    // Optimistic overlay wins until Spotify catches up (see effect above).
+    if (pickedOptimistic) {
+      return {
+        ...(heos || {}),
+        song: pickedOptimistic.song,
+        artist: pickedOptimistic.artist,
+        album: '',
+        image_url: pickedOptimistic.image_url,
+      };
+    }
     if (!playback?.song && !playback?.image_url) return heos;
     return {
       ...(heos || {}),
@@ -275,7 +327,7 @@ export default function App() {
       album: playback.album || heos?.album || '',
       image_url: playback.image_url || heos?.image_url || '',
     };
-  }, [snap.nowPlaying, playback?.song, playback?.artist, playback?.album, playback?.image_url]);
+  }, [snap.nowPlaying, playback?.song, playback?.artist, playback?.album, playback?.image_url, pickedOptimistic]);
 
   const art = displayedNowPlaying?.image_url || null;
 
@@ -457,7 +509,7 @@ function readPinsCount() {
 // plus the wall time when it was taken; NowPlaying interpolates from there.
 const POLL_MS = 5000;
 const POLL_NEAR_END_MIN_MS = 800;
-function usePlaybackProgress({ enabled, playStateHint }) {
+function usePlaybackProgress({ enabled, playStateHint, bumpToken }) {
   const [sample, setSample] = useState(null); // { progress_ms, duration_ms, is_playing, song, ..., sampledAt }
 
   useEffect(() => {
@@ -513,7 +565,10 @@ function usePlaybackProgress({ enabled, playStateHint }) {
       stop();
       document.removeEventListener('visibilitychange', onVis);
     };
-  }, [enabled, playStateHint]);
+    // bumpToken in deps: every increment tears down the loop (cancelling any
+    // pending sleep) and restarts with an immediate fetch — that's how a play
+    // tap forces a re-poll instead of waiting up to 5s.
+  }, [enabled, playStateHint, bumpToken]);
 
   return sample;
 }
