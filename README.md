@@ -98,7 +98,7 @@ The Mac works fine for testing, but it sleeps. For a "just works, all the time" 
 
 ### One-time Pi setup
 
-1. **Flash the OS.** Raspberry Pi Imager → Pi OS Lite (64-bit). In the gear menu set: hostname `heos`, enable SSH, fill in your Wi-Fi creds (or skip if you'll use Ethernet — recommended). Boot the Pi, wait ~60s.
+1. **Flash the OS.** Raspberry Pi Imager → Pi OS Lite (64-bit). In the gear menu set: hostname `heos`, **username `pi`** with a password (Pi Imager 2023+ refuses to default to `pi` — the systemd unit and every path below assumes this user), enable SSH, fill in your Wi-Fi creds (or skip if you'll use Ethernet — recommended). Boot the Pi, wait ~60s. *If you used a different username, replace `/home/pi` everywhere below with `/home/<your-user>`.*
 2. **SSH in:** `ssh pi@heos.local`. (If `.local` doesn't resolve from your Mac, grab the IP from your router's admin UI.)
 3. **Reserve a stable IP** in your router's DHCP table — mDNS is usually fine, but a fixed IP is the painless fallback.
 4. **Install Node 20+:**
@@ -138,6 +138,8 @@ git pull && npm ci && npm run build:web
 sudo systemctl restart heos-controller
 ```
 
+If `git pull` complains about local changes (someone tweaked a file directly on the Pi), the safe reset is `git fetch origin && git reset --hard origin/main` — the only state outside the repo is `~/.heos-controller/` (Spotify tokens + recents) which is untouched.
+
 ## Out of scope for v1
 
 - Sleep timers, alarms, EQ.
@@ -147,4 +149,5 @@ sudo systemctl restart heos-controller
 
 - **"No HEOS speaker responded to SSDP"**: your Mac must be on the same Wi-Fi as the speakers. Add `HEOS_HOST=<ip>` to `.env` to skip discovery.
 - **"No Spotify Connect device matching HEOS player"**: the speaker has gone to sleep. Tap any control on it (or play one second of audio in the official HEOS app) to wake it up.
+- **Auto-restart on a wedge (Pi)**: the controller exposes `/healthz` (200 when HEOS is connected, 503 otherwise). For a paranoid 30-second-MTTR safety net, add a cron job: `*/5 * * * * curl -fsS http://localhost:8080/healthz >/dev/null || sudo systemctl restart heos-controller`.
 - **Wife still doesn't like it**: open an issue with what specifically would make it better.
