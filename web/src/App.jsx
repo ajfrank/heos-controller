@@ -287,15 +287,21 @@ export default function App() {
   const latestPlaybackSongRef = useRef('');
   useEffect(() => { latestPlaybackSongRef.current = playback?.song || ''; }, [playback?.song]);
 
-  // Clear the optimistic overlay as soon as Spotify reports a track different
-  // from the one that was playing at pick time — that's our cue that the new
-  // playback has actually landed. 10s safety timeout in case Spotify never
-  // catches up (session migrated, wrong device, etc).
+  // Clear the optimistic overlay as soon as Spotify reports either:
+  //  (a) a track different from the one that was playing at pick time
+  //      (Spotify confirmed the new playback landed), or
+  //  (b) a track matching the optimistic pick (covers the same-song replay
+  //      case — without (b) the overlay would sit until the 10s safety
+  //      timeout because prevSpotifySong === picked song).
+  // 10s safety timeout in case Spotify never catches up (session migrated,
+  // wrong device, etc).
   useEffect(() => {
     if (!pickedOptimistic) return;
-    if (playback?.song && playback.song !== pickedOptimistic.prevSpotifySong) {
-      setPickedOptimistic(null);
-      return;
+    if (playback?.song) {
+      if (playback.song !== pickedOptimistic.prevSpotifySong || playback.song === pickedOptimistic.song) {
+        setPickedOptimistic(null);
+        return;
+      }
     }
     const t = setTimeout(() => setPickedOptimistic(null), 10000);
     return () => clearTimeout(t);

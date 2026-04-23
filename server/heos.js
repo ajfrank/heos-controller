@@ -112,6 +112,17 @@ class HeosClient extends EventEmitter {
       sock.on('data', (chunk) => this._onData(chunk));
       sock.on('close', () => {
         this.socket = null;
+        // Drain any in-flight commands so callers fail fast instead of hanging
+        // until their per-command 8s timeout. Critical for the overnight
+        // ETIMEDOUT → reconnect path: stale entries left in `pending` would
+        // claim FIFO responses on the new socket and mis-route them.
+        const stale = this.pending;
+        this.pending = [];
+        for (const entry of stale) {
+          if (entry.cancelled) continue;
+          entry.cancelled = true;
+          try { entry.reject(new Error('HEOS connection lost')); } catch {}
+        }
         this.emit('disconnected');
         this._scheduleReconnect();
       });

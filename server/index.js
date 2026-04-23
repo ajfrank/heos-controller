@@ -23,7 +23,11 @@ const DEVICE_CACHE_POLL_MS = 60_000;
 let cachePollTimer = null;
 function startDeviceCachePoll() {
   if (cachePollTimer) return;
-  const tick = () => refreshDeviceCache({ spotify, state });
+  // Catch on the tick: refreshDeviceCache only wraps getDevices() in a
+  // try/catch; persist.read/write failures (rare FS errors on a Pi under
+  // load) would otherwise become unhandled rejections.
+  const tick = () => refreshDeviceCache({ spotify, state })
+    .catch((e) => console.warn('[device-cache] poll failed:', e.message));
   tick();
   cachePollTimer = setInterval(tick, DEVICE_CACHE_POLL_MS);
 }
