@@ -6,8 +6,15 @@ export function findMatchingDevice(devices, pids, players) {
   // (browser Web Player, transient SDK clients). The empty-string entry
   // would otherwise shadow a legitimate empty player name and turn into a
   // crash on `.trim()` of null.
+  // Also skip devices missing an `id` — Spotify's Web API can briefly return
+  // Connect entries with `id: null` during handshake or for restricted
+  // clients. Matching on those would flow `null` through to transferPlayback,
+  // throwing an opaque 4xx and stranding the foreign-device watcher with no
+  // device_id to compare against. Better to fall through to the cached-id
+  // wake path, which has a real id.
+  const usable = devices.filter((d) => d && d.id);
   const seenByName = new Map(
-    devices
+    usable
       .map((d) => [(d.name || '').trim().toLowerCase(), d])
       .filter(([k]) => k),
   );
@@ -17,7 +24,7 @@ export function findMatchingDevice(devices, pids, players) {
     const key = (player.name || '').trim().toLowerCase();
     if (!key) continue;
     const exact = seenByName.get(key);
-    const fuzzy = exact || devices.find((d) => (d.name || '').trim().toLowerCase().includes(key));
+    const fuzzy = exact || usable.find((d) => (d.name || '').trim().toLowerCase().includes(key));
     if (fuzzy) return { device: fuzzy, leaderPid: pid };
   }
   return null;

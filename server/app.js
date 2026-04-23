@@ -135,7 +135,8 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       e &&
       typeof e.uri === 'string' && SPOTIFY_URI_RE.test(e.uri) &&
       typeof e.ts === 'number' &&
-      typeof e.label === 'string',
+      typeof e.label === 'string' &&
+      (typeof e.art !== 'string' ? false : e.art === '' || /^https:\/\//.test(e.art)),
   );
   state.setFrequent(computeFrequent(playLog, state.recents));
 
@@ -399,7 +400,12 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       // a row of identical tiles to the top.
       if (label) {
         const now = Date.now();
-        const recentEntry = { uri, label, sublabel: sublabel || '', art: art || '', badge: badge || '', ts: now };
+        // Defense-in-depth: only persist `art` if it's an https URL (or empty).
+        // The hydration filter already enforces this on read, but mirroring the
+        // check here means a malformed in-session value can't reach <img src>
+        // via the WS broadcast before the next restart.
+        const safeArt = typeof art === 'string' && (art === '' || /^https:\/\//.test(art)) ? art : '';
+        const recentEntry = { uri, label, sublabel: sublabel || '', art: safeArt, badge: badge || '', ts: now };
         const next = [
           recentEntry,
           ...state.recents.filter((r) => r.uri !== uri),
@@ -485,14 +491,25 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     await serializeGroupOp(async () => {
       try {
         const pids = state.activePids.slice();
+        // Track whether HEOS actually paused. We still clear activeZones either
+        // way (the user wants out), but the response should be honest about
+        // partial success so the UI can warn instead of toasting "Stopped".
+        let heosPauseFailed = false;
         if (pids.length) {
           try { await getH().setPlayState(pids[0], 'pause'); }
-          catch (e) { console.warn('[stop-all] HEOS pause failed:', e.message); }
+          catch (e) {
+            heosPauseFailed = true;
+            console.warn('[stop-all] HEOS pause failed:', e.message);
+          }
         }
         // Spotify pause is fire-and-forget — "no active device" is fine.
         try { await spotify.pauseActive(); } catch {}
         state.setActiveZones([]);
-        res.json({ ok: true });
+        if (heosPauseFailed) {
+          res.json({ ok: true, partial: true, warning: 'HEOS pause failed — speakers may still be playing' });
+        } else {
+          res.json({ ok: true });
+        }
       } catch (e) {
         sendErr(res, e);
       }

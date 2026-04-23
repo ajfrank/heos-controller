@@ -22,9 +22,14 @@ export function readJson(name, fallback) {
 export function writeJson(name, value) {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   const file = path.join(DATA_DIR, name);
-  fs.writeFileSync(file, JSON.stringify(value, null, 2), { mode: 0o600 });
-  // writeFileSync only sets mode on creation; tighten if a pre-existing file
-  // had looser perms (matches the pattern in spotify.js).
-  try { fs.chmodSync(file, 0o600); }
+  // Atomic write: SIGKILL or power loss between truncate and full write would
+  // otherwise leave the file empty, dropping every recent / Often / device-id
+  // entry. Write to a sibling .tmp first, then rename — rename is atomic on
+  // ext4/APFS, so readers see either the old version or the new one, never a
+  // half-written one.
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
+  try { fs.chmodSync(tmp, 0o600); }
   catch (e) { console.warn('[persist] chmod failed:', e.message); }
+  fs.renameSync(tmp, file);
 }
