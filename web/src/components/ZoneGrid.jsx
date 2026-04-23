@@ -48,7 +48,7 @@ export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid 
                 base: [
                   'w-full h-full min-h-[88px] border transition-colors',
                   active
-                    ? 'bg-white/[0.08] border-white/40'
+                    ? 'bg-primary/[0.12] border-primary/70'
                     : 'bg-white/[0.03] border-white/10',
                 ].join(' '),
               }}
@@ -67,7 +67,7 @@ export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid 
                         className="text-tiny text-default-500 truncate"
                         title={npLine}
                       >
-                        {isPlaying ? '♪ ' : '⏸ '}{npLine}
+                        <span className={isPlaying ? 'text-primary' : ''}>{isPlaying ? '♪ ' : '⏸ '}</span>{npLine}
                       </span>
                     )}
                   </span>
@@ -78,7 +78,7 @@ export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid 
                         animate={{ scale: 1, opacity: 1 }}
                         exit={{ scale: 0, opacity: 0 }}
                         transition={{ type: 'spring', stiffness: 500, damping: 22 }}
-                        className="mt-0.5 inline-flex items-center justify-center w-6 h-6 rounded-full bg-white text-black"
+                        className="mt-0.5 inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary text-primary-foreground"
                         aria-label="Active"
                       >
                         <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">

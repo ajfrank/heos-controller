@@ -20,19 +20,6 @@ body {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
-/* F7: smooth the album-art accent retint. HeroUI ships with no transition on
-   primary-tinted surfaces (it expects a static brand color), so a hard hue
-   swap on every track change snaps unpleasantly. 600ms ease-out feels
-   anchored to the 600ms album-art crossfade in Backdrop. */
-.bg-primary,
-[class*="bg-primary/"],
-.text-primary,
-.border-primary,
-[data-slot="track"],
-[data-slot="filler"],
-[data-slot="thumb"] {
-  transition: background-color 600ms ease-out, border-color 600ms ease-out, color 600ms ease-out;
-}
 button:focus-visible,
 a:focus-visible,
 [role="button"]:focus-visible,

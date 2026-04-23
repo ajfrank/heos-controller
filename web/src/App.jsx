@@ -9,7 +9,6 @@ import SearchResults from './components/SearchResults.jsx';
 import Backdrop from './components/Backdrop.jsx';
 import Banner from './components/Banner.jsx';
 import QuickPicks from './components/QuickPicks.jsx';
-import { extractAccent } from './lib/extractAccent.js';
 
 const SOURCE_KEY = 'heos.source';
 if (localStorage.getItem(SOURCE_KEY)) localStorage.removeItem(SOURCE_KEY);
@@ -201,7 +200,6 @@ export default function App() {
   }, [snap.nowPlaying, playback?.song, playback?.artist, playback?.album, playback?.image_url]);
 
   const art = displayedNowPlaying?.image_url || null;
-  useAlbumAccent(art);
 
   async function seekTo(ms) {
     try { await api.seek(ms); } catch (e) { showToast(e.message, 'error'); }
@@ -343,23 +341,6 @@ function usePinsCount() {
 function readPinsCount() {
   try { return (JSON.parse(localStorage.getItem('heos.quickpicks.pins') || '[]') || []).length; }
   catch { return 0; }
-}
-
-// F7: pull a dominant hue from the current art and override HeroUI's primary
-// HSL variable so the play button, sliders, active zone borders, and chip
-// accents all retint to match. Falls back to Spotify green when no art or no
-// usable color (podcast, mostly-gray covers).
-const SPOTIFY_PRIMARY = '141 73% 42%';
-function useAlbumAccent(artUrl) {
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const accent = artUrl ? await extractAccent(artUrl) : null;
-      if (cancelled) return;
-      document.documentElement.style.setProperty('--heroui-primary', accent || SPOTIFY_PRIMARY);
-    })();
-    return () => { cancelled = true; };
-  }, [artUrl]);
 }
 
 // F3: poll Spotify's /me/player while a track is playing AND the tab is
