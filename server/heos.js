@@ -188,6 +188,16 @@ class HeosClient extends EventEmitter {
           );
           err.code = 'EID13';
           target.reject(err);
+        } else if (/eid=11/.test(msg)) {
+          // "System busy" — distinct from eid=13 (per-command queue) but
+          // similar UX: short delay then retry. _doApplyGroup catches and
+          // retries; surfaced text mirrors EID13 so the wife sees the same
+          // hint either way.
+          const err = new Error(
+            "HEOS is busy — give it a second and try again."
+          );
+          err.code = 'EID11';
+          target.reject(err);
         } else if (cmd === 'group/set_group' && /eid=7/.test(msg)) {
           // "Command Couldn't Be Executed" — usually a transient speaker state
           // (just woke from Spotify Connect, mid-handoff, etc.). _doApplyGroup
@@ -196,6 +206,25 @@ class HeosClient extends EventEmitter {
             "HEOS couldn't complete the grouping — a speaker may be asleep or busy. Try again in a moment."
           );
           err.code = 'EID7';
+          target.reject(err);
+        } else if (/eid=10/.test(msg)) {
+          // "Unrecognized command" — almost certainly a code bug (typo in a
+          // command path or an unsupported parameter for this firmware), not
+          // something the user can fix. Surface that explicitly so we can
+          // tell it apart from the transient-busy codes during debugging.
+          const err = new Error(
+            `HEOS rejected ${cmd} as unrecognized — the speaker firmware may not support this command.`
+          );
+          err.code = 'EID10';
+          target.reject(err);
+        } else if (/eid=12/.test(msg)) {
+          // "System error" — generic internal failure. Not retriable from our
+          // side; usually means a speaker rebooted mid-command or lost its
+          // mesh link. Tag with a code so callers can distinguish.
+          const err = new Error(
+            "HEOS reported an internal error — a speaker may have lost its connection. Try again in a moment."
+          );
+          err.code = 'EID12';
           target.reject(err);
         } else {
           target.reject(new Error(`HEOS ${cmd} failed: ${msg || 'unknown'}`));
@@ -373,10 +402,10 @@ class HeosClient extends EventEmitter {
         await new Promise((r) => setTimeout(r, 1500));
         return this.setGroup(pids);
       }
-      // eid=13 = "Processing previous command". HEOS is busy with an internal
-      // state change (often Spotify Connect wake fallout). Wait briefly and
-      // retry once — the busy window is typically <1s.
-      if (e.code === 'EID13') {
+      // eid=13 = "Processing previous command", eid=11 = "System busy" — both
+      // are transient busy signals (often Spotify Connect wake fallout). Wait
+      // briefly and retry once; the busy window is typically <1s.
+      if (e.code === 'EID13' || e.code === 'EID11') {
         await new Promise((r) => setTimeout(r, 800));
         return this.setGroup(pids);
       }

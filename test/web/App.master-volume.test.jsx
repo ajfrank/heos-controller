@@ -76,13 +76,43 @@ describe('App master volume', () => {
     await waitFor(() => expect(screen.getByTestId('np')).toHaveTextContent('master=30'));
   });
 
-  it('drag to 60 fires per-zone setVolume for each active zone', async () => {
+  it('drag to 60 fires per-zone setVolume for each active zone (debounced)', async () => {
     renderApp();
     await waitFor(() => expect(screen.getByTestId('np')).toHaveTextContent('master=30'));
     act(() => { lastNowPlayingProps.onMasterVolume(60); });
+    // UI flips immediately (optimistic master override).
     await waitFor(() => expect(screen.getByTestId('np')).toHaveTextContent('master=60'));
-    expect(api.setVolume).toHaveBeenCalledWith('Upstairs', 60);
+    // Network fan-out is debounced ~80ms so a 30Hz drag doesn't N×4× HEOS commands.
+    await waitFor(() => expect(api.setVolume).toHaveBeenCalledWith('Upstairs', 60));
     expect(api.setVolume).toHaveBeenCalledWith('Porch', 60);
+  });
+
+  it('rapid drag ticks coalesce: only the latest value reaches the network', async () => {
+    renderApp();
+    await waitFor(() => expect(screen.getByTestId('np')).toHaveTextContent('master=30'));
+    // Simulate a slider drag of 5 ticks within the debounce window.
+    act(() => {
+      lastNowPlayingProps.onMasterVolume(40);
+      lastNowPlayingProps.onMasterVolume(45);
+      lastNowPlayingProps.onMasterVolume(50);
+      lastNowPlayingProps.onMasterVolume(55);
+      lastNowPlayingProps.onMasterVolume(60);
+    });
+    await waitFor(() => expect(api.setVolume).toHaveBeenCalledWith('Upstairs', 60));
+    // Per zone, exactly one fan-out — earlier ticks were dropped.
+    const upstairsCalls = api.setVolume.mock.calls.filter((c) => c[0] === 'Upstairs');
+    expect(upstairsCalls).toEqual([['Upstairs', 60]]);
+  });
+
+  it('onMasterVolumeEnd flushes the pending value immediately, even mid-debounce', async () => {
+    renderApp();
+    await waitFor(() => expect(screen.getByTestId('np')).toHaveTextContent('master=30'));
+    act(() => { lastNowPlayingProps.onMasterVolume(75); });
+    // End drag synchronously — the final value should be sent without waiting
+    // for the debounce timer to elapse, so finger-up locks the volume in.
+    act(() => { lastNowPlayingProps.onMasterVolumeEnd(); });
+    expect(api.setVolume).toHaveBeenCalledWith('Upstairs', 75);
+    expect(api.setVolume).toHaveBeenCalledWith('Porch', 75);
   });
 
   it('a WS volume_changed for one pid does NOT yank the displayed master mid-drag', async () => {

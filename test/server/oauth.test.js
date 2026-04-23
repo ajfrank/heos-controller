@@ -21,7 +21,7 @@ describe('GET /api/spotify/login', () => {
     expect(passedState).toMatch(/^[a-f0-9]{32}$/);
   });
 
-  it('500s when getAuthUrl throws (e.g., missing client id)', async () => {
+  it('500s with generic text/plain when getAuthUrl throws (does not leak server error)', async () => {
     const { app } = buildTestApp({
       spotify: {
         getAuthUrl: vi.fn(() => { throw new Error('SPOTIFY_CLIENT_ID not set'); }),
@@ -29,7 +29,11 @@ describe('GET /api/spotify/login', () => {
     });
     const res = await request(app).get('/api/spotify/login');
     expect(res.status).toBe(500);
-    expect(res.text).toMatch(/SPOTIFY_CLIENT_ID/);
+    expect(res.headers['content-type']).toMatch(/^text\/plain/);
+    // The raw config error is logged server-side, NOT reflected to the client —
+    // a public-facing controller shouldn't expose internal config details.
+    expect(res.text).not.toMatch(/SPOTIFY_CLIENT_ID/);
+    expect(res.text).toMatch(/login failed/i);
   });
 
   it('mints a fresh state on every request', async () => {
@@ -122,18 +126,23 @@ describe('GET /api/spotify/callback', () => {
     expect(spotify.exchangeCode).toHaveBeenCalledTimes(1);
   });
 
-  it('500s when exchangeCode throws', async () => {
+  it('500s with generic text/plain when exchangeCode throws (does not leak Spotify error body)', async () => {
     const { app } = buildTestApp({
       spotify: {
         getAuthUrl: vi.fn((s) => `https://x/?s=${s}`),
-        exchangeCode: vi.fn().mockRejectedValue(new Error('token exchange failed: 400')),
+        exchangeCode: vi.fn().mockRejectedValue(new Error('token exchange failed: 400 invalid_grant')),
       },
     });
     const login = await request(app).get('/api/spotify/login');
     const minted = new URL(login.headers.location).searchParams.get('s');
     const res = await request(app).get(`/api/spotify/callback?code=thecode&state=${minted}`);
     expect(res.status).toBe(500);
-    expect(res.text).toMatch(/token exchange failed/);
+    expect(res.headers['content-type']).toMatch(/^text\/plain/);
+    // The raw upstream error (including any token bytes Spotify echoed back)
+    // is logged server-side, NOT reflected to the browser.
+    expect(res.text).not.toMatch(/token exchange failed/);
+    expect(res.text).not.toMatch(/invalid_grant/);
+    expect(res.text).toMatch(/connection failed/i);
   });
 });
 

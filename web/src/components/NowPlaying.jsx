@@ -21,7 +21,7 @@ const volumeSliderClasses = {
 
 const REPEAT_CYCLE = { off: 'context', context: 'track', track: 'off' };
 
-export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMasterVolume, onMasterVolumeEnd, playback, onSeek, onKillSession }) {
+export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMasterVolume, onMasterVolumeEnd, playback, onSeek, seekOverride, onKillSession }) {
   const np = nowPlaying || {};
   const hasTrack = np.song || np.title;
   const title = np.song || np.title || '';
@@ -48,11 +48,46 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
     setOptimistic(next);
     onControl(next ? 'play' : 'pause');
   }
-  const progressMs = useInterpolatedProgress(playback);
+  const interpolatedMs = useInterpolatedProgress(playback);
+  // While the seek override is set, show the seeked position as the source of
+  // truth — App.jsx clears it once Spotify reports a poll past the seeked point.
+  const progressMs = seekOverride != null ? seekOverride : interpolatedMs;
   const durationMs = playback?.duration_ms ?? 0;
   const showBar = hasTrack && durationMs > 0;
-  const shuffleOn = !!playback?.shuffle_state;
-  const repeatMode = playback?.repeat_state || 'off';
+
+  // Shuffle/repeat optimism mirrors the play/pause pattern above. Spotify
+  // polls every 5s, so without this the icon stays in its old state for up
+  // to 5s after a tap — which reads as "did my tap register?". Reconcile when
+  // the next poll's reported value matches the optimistic one (or fall back
+  // after 6s if Spotify never confirms).
+  const reportedShuffle = !!playback?.shuffle_state;
+  const reportedRepeat = playback?.repeat_state || 'off';
+  const [shuffleOpt, setShuffleOpt] = useState(null);
+  const [repeatOpt, setRepeatOpt] = useState(null);
+  const shuffleOn = shuffleOpt ?? reportedShuffle;
+  const repeatMode = repeatOpt ?? reportedRepeat;
+  useEffect(() => {
+    if (shuffleOpt == null) return;
+    if (shuffleOpt === reportedShuffle) { setShuffleOpt(null); return; }
+    const t = setTimeout(() => setShuffleOpt(null), 6000);
+    return () => clearTimeout(t);
+  }, [shuffleOpt, reportedShuffle]);
+  useEffect(() => {
+    if (repeatOpt == null) return;
+    if (repeatOpt === reportedRepeat) { setRepeatOpt(null); return; }
+    const t = setTimeout(() => setRepeatOpt(null), 6000);
+    return () => clearTimeout(t);
+  }, [repeatOpt, reportedRepeat]);
+  function toggleShuffle() {
+    const next = !shuffleOn;
+    setShuffleOpt(next);
+    onControl('shuffle', next);
+  }
+  function cycleRepeat() {
+    const next = REPEAT_CYCLE[repeatMode] || 'off';
+    setRepeatOpt(next);
+    onControl('repeat', next);
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -141,7 +176,7 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
         <TransportIconButton
           label={shuffleOn ? 'Shuffle on' : 'Shuffle off'}
           pressed={shuffleOn}
-          onPress={() => onControl('shuffle', !shuffleOn)}
+          onPress={toggleShuffle}
         >
           <ShuffleIcon className="w-5 h-5" />
         </TransportIconButton>
@@ -162,7 +197,7 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
         <TransportIconButton
           label={`Repeat ${repeatMode}`}
           pressed={repeatMode !== 'off'}
-          onPress={() => onControl('repeat', REPEAT_CYCLE[repeatMode] || 'off')}
+          onPress={cycleRepeat}
         >
           {repeatMode === 'track' ? <RepeatOneIcon className="w-5 h-5" /> : <RepeatIcon className="w-5 h-5" />}
         </TransportIconButton>

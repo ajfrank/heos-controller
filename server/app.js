@@ -19,6 +19,20 @@ function sendErr(res, e) {
   res.status(500).json({ error: e.message });
 }
 
+// Allow-list of browser origins permitted to drive the API and the WS. Same
+// env var, used in two places (CSRF middleware in createApp, verifyClient in
+// attachWebSocket) so adding the Pi's hostname turns BOTH on at once. Default
+// covers the served-from-server origins (:8080) plus Vite's dev server (:5173).
+function parseAllowedOrigins() {
+  return new Set(
+    (process.env.WS_ALLOWED_ORIGINS ||
+      'http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const RECENTS_FILE = 'recents.json';
@@ -39,11 +53,41 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
   // can swap in the real client after async discovery without holding up listen().
   const getH = typeof heos === 'function' ? heos : () => heos;
 
+  // Serialize mutations that read state.activePids and then act (zone toggles
+  // and play). Without this, two interleaved requests can each snapshot prior,
+  // mutate, then roll back — clobbering each other. heos.applyGroup has its
+  // own coalescer, but that's per-HEOS-call, not per-route; race windows still
+  // exist around the snapshot/apply pair. Single chained promise; cheap.
+  let groupChain = Promise.resolve();
+  function serializeGroupOp(fn) {
+    const next = groupChain.then(fn, fn);
+    // Don't poison the chain on rejection — rejections should reach the caller
+    // via `next`, but the chain itself should keep accepting work.
+    groupChain = next.catch(() => {});
+    return next;
+  }
+
   const app = express();
   // Gzip the bundle (~603KB → ~180KB) and JSON responses. Place before
   // express.static so the static middleware's response stream gets compressed.
   app.use(compression());
   app.use(express.json());
+
+  // CSRF defense for /api/* mutations. A malicious page on attacker.com could
+  // simple-form-post to http://heos.local:8080/api/spotify/disconnect (or any
+  // other state-changing route) without us ever loading. Browsers always set
+  // Origin on cross-origin requests, so reject any request whose Origin is set
+  // but NOT in the allow-list. Header-less requests (curl, server-to-server,
+  // some same-origin native fetches) pass through — they aren't a browser CSRF
+  // vector. GETs are exempt (the only mutation-via-GET path we have is the
+  // OAuth callback, which is bound to a single-use state token already).
+  const allowedOrigins = parseAllowedOrigins();
+  app.use('/api', (req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    const origin = req.get('Origin');
+    if (!origin || allowedOrigins.has(origin)) return next();
+    res.status(403).json({ error: 'forbidden origin' });
+  });
 
   // Readiness: routes that need a HEOS client return 503 until the bootstrap calls
   // app.locals.setHeosReady(). /api/state and OAuth don't touch heos so they pass through.
@@ -88,21 +132,23 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     if (unknown.length) {
       return res.status(400).json({ error: `unknown zone(s): ${unknown.join(', ')}` });
     }
-    // Snapshot prior selection BEFORE optimistic update so we can roll back
-    // if HEOS rejects the regroup. Without this, the client rolls back its
-    // own optimistic toggle but the server keeps the new selection — the next
-    // /api/play then acts on zones the user already abandoned.
-    const prior = state.activeZones.slice();
-    state.setActiveZones(zones);
-    try {
-      // Empty selection = best-effort no-op (don't issue an empty set_group).
-      const pids = state.activePids;
-      if (pids.length) await getH().applyGroup(pids);
-      res.json({ ok: true });
-    } catch (e) {
-      state.setActiveZones(prior);
-      res.status(500).json({ error: e.message });
-    }
+    await serializeGroupOp(async () => {
+      // Snapshot prior selection BEFORE optimistic update so we can roll back
+      // if HEOS rejects the regroup. Without this, the client rolls back its
+      // own optimistic toggle but the server keeps the new selection — the next
+      // /api/play then acts on zones the user already abandoned.
+      const prior = state.activeZones.slice();
+      state.setActiveZones(zones);
+      try {
+        // Empty selection = best-effort no-op (don't issue an empty set_group).
+        const pids = state.activePids;
+        if (pids.length) await getH().applyGroup(pids);
+        res.json({ ok: true });
+      } catch (e) {
+        state.setActiveZones(prior);
+        res.status(500).json({ error: e.message });
+      }
+    });
   });
 
   app.get('/api/search', async (req, res) => {
@@ -122,6 +168,9 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
   });
 
   app.post('/api/play', async (req, res) => {
+    await serializeGroupOp(() => playHandler(req, res));
+  });
+  async function playHandler(req, res) {
     try {
       const pids = state.activePids;
       if (!pids.length) return res.status(400).json({ error: 'No active zones selected' });
@@ -261,17 +310,29 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
         }
         // Restore the prior group; if there wasn't one, ungroup the leader so
         // the user can pick zones cleanly without stale speakers attached.
+        let rollbackOk = true;
         try {
           if (priorGroupPids?.length) await h.applyGroup(priorGroupPids);
           else await h.applyGroup([leaderPid]);
-        } catch {
-          // Best-effort rollback — the caller will retry from a clean state.
+        } catch (rollbackErr) {
+          rollbackOk = false;
+          // The HEOS group state is now ambiguous — original mutation succeeded,
+          // playback failed, AND we couldn't restore the prior group. Force a
+          // fresh snapshot to all WS clients so the UI doesn't strand showing
+          // a group that doesn't exist on the speakers.
+          console.warn('[heos] rollback applyGroup failed:', rollbackErr.message);
+          state.emit('snapshot');
         }
         // A stale wake is the user's "speaker is asleep" path — surface the
         // same actionable 404 the no-leader branch returns instead of an
         // opaque 500. Without this, the first tap looks like a server crash;
         // only the second tap (after the cache is pruned) shows the toast.
         if (stale) return res.status(404).json({ error: noLeaderMessage() });
+        if (!rollbackOk) {
+          // Distinct code so the client can decide to refetch / show a louder
+          // toast, instead of treating it like an ordinary play failure.
+          return res.status(500).json({ error: playErr.message, code: 'state_dirty' });
+        }
         throw playErr;
       }
 
@@ -300,7 +361,7 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     } catch (e) {
       sendErr(res, e);
     }
-  });
+  }
 
   // Remove a single recent (the wife taps × on a tile in Edit mode). Pinned
   // items live in localStorage so they're managed client-side; recents are
@@ -390,17 +451,34 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     if (!zone) return res.status(400).json({ error: 'zone required' });
     const z = state.zones.find((x) => x.name === zone);
     if (!z) return res.status(400).json({ error: `unknown zone: ${zone}` });
-    try {
-      // Master volume = set every speaker in the zone to the same level.
-      // HEOS group sync mirrors audio but NOT volume; each speaker's level
-      // is independent. Parallel calls — HEOS handles concurrent set_volume
-      // on a single connection.
-      await Promise.all(z.pids.map((pid) => getH().setVolume(pid, level)));
-      for (const pid of z.pids) state.setVolume(pid, level);
-      res.json({ ok: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
+    // Master volume = set every speaker in the zone to the same level.
+    // HEOS group sync mirrors audio but NOT volume; each speaker's level
+    // is independent. allSettled (not all) so one offline speaker doesn't
+    // strand the rest at the old level — partial success is the more useful
+    // outcome here than all-or-nothing.
+    const h = getH();
+    const results = await Promise.allSettled(
+      z.pids.map((pid) => h.setVolume(pid, level)),
+    );
+    const failed = [];
+    for (let i = 0; i < z.pids.length; i++) {
+      const pid = z.pids[i];
+      if (results[i].status === 'fulfilled') state.setVolume(pid, level);
+      else failed.push({ pid, reason: results[i].reason?.message || 'unknown' });
     }
+    if (failed.length === z.pids.length) {
+      // Every speaker rejected — surface the first error so the caller has
+      // something actionable to display.
+      return res.status(500).json({ error: failed[0].reason });
+    }
+    if (failed.length) {
+      // Partial success: applied state for the speakers that took it; report
+      // 207-style success-with-warnings so the caller can decide whether to
+      // toast (we don't actually use 207 to keep the response shape simple).
+      console.warn('[heos] volume partial failure for zone', zone, failed);
+      return res.json({ ok: true, partial: true, failedPids: failed.map((f) => f.pid) });
+    }
+    res.json({ ok: true });
   });
 
   // Debug route exposes account state — only register when explicitly enabled.
@@ -444,7 +522,10 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       setTimeout(() => oauthStates.delete(oauthState), OAUTH_STATE_TTL_MS);
       res.redirect(spotify.getAuthUrl(oauthState));
     } catch (e) {
-      res.status(500).send(e.message);
+      // Don't reflect the raw exception (often "SPOTIFY_CLIENT_ID not set",
+      // sometimes more telling). Log server-side; show user actionable copy.
+      console.warn('[spotify] /login failed:', e.message);
+      res.status(500).type('text/plain').send('Spotify login failed — please try again.');
     }
   });
 
@@ -462,7 +543,8 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       await spotify.exchangeCode(String(code));
       res.send('<html><body style="font-family:system-ui;padding:2rem"><h2>Spotify connected ✓</h2><p>You can close this tab and return to the controller.</p></body></html>');
     } catch (e) {
-      res.status(500).send(e.message);
+      console.warn('[spotify] /callback exchange failed:', e.message);
+      res.status(500).type('text/plain').send('Spotify connection failed — please try again.');
     }
   });
 
@@ -482,16 +564,8 @@ export function attachWebSocket(server, { state, spotify }) {
   // Browsers attach an Origin header to the WS handshake; CLI clients (curl)
   // generally don't. Reject cross-origin browser attempts so a malicious page
   // can't drive the controller from a stranger tab; allow header-less clients
-  // for local debugging.
-  // Default list covers the served-from-server origins (:8080) plus Vite's dev
-  // server (:5173) so `npm run dev` works without needing to set the env.
-  const allowed = new Set(
-    (process.env.WS_ALLOWED_ORIGINS ||
-      'http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
+  // for local debugging. Allow-list shared with the REST CSRF middleware.
+  const allowed = parseAllowedOrigins();
   const wss = new WebSocketServer({
     server,
     path: '/ws',
@@ -515,12 +589,26 @@ export function attachWebSocket(server, { state, spotify }) {
       if (ws.readyState === ws.OPEN) ws.send(msg);
     }
   };
+  // Force-resync signal: server has discovered the local view of HEOS group
+  // state may diverge from reality (e.g. play rollback failed). Push a fresh
+  // snapshot to every client so the UI stops trusting its incremental view.
+  const onSnapshot = () => {
+    const msg = JSON.stringify({
+      type: 'snapshot',
+      state: { ...state.snapshot(), spotifyConnected: spotify.isConnected() },
+    });
+    for (const ws of wss.clients) {
+      if (ws.readyState === ws.OPEN) ws.send(msg);
+    }
+  };
   state.on('change', onChange);
+  state.on('snapshot', onSnapshot);
 
   return {
     wss,
     close: () => {
       state.off('change', onChange);
+      state.off('snapshot', onSnapshot);
       wss.close();
     },
   };

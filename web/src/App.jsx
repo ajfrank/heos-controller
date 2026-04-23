@@ -58,6 +58,10 @@ export default function App() {
     // payloads disagreed during a fast reconnect.
     const conn = connectWS((msg) => {
       if (msg.type === 'snapshot') {
+        // Server's state.snapshot() is the authoritative full picture. Top-level
+        // spread overwrites every key (players, zones, nowPlayingByPid, volumes…),
+        // so a reconnect snapshot — or a server-pushed resync after a play
+        // rollback failed — fully replaces the optimistic in-flight state.
         setSnap((cur) => ({ ...cur, ...msg.state }));
         setWsReady(true);
       } else if (msg.type === 'change') {
@@ -148,6 +152,15 @@ export default function App() {
   // thumb out of the user's finger.
   const [masterOverride, setMasterOverride] = useState(null);
   const draggingMaster = useRef(false);
+  // Debounce the fan-out: a slider drag fires onChange ~30×/s, and each tick
+  // would otherwise dispatch N parallel HEOS set_volume calls (one per active
+  // pid). With three zones × four speakers that's 120 commands/s — enough to
+  // saturate HEOS's processing window and trigger eid=11/13 busy errors. The
+  // override above keeps the UI snappy; the LATEST level coalesces into a
+  // single fan-out per ~80ms.
+  const masterPendingLevel = useRef(null);
+  const masterFanoutTimer = useRef(null);
+  const MASTER_DEBOUNCE_MS = 80;
 
   const derivedMaster = useMemo(() => {
     const vals = snap.activePids.map((p) => snap.volumes[p]).filter((v) => typeof v === 'number');
@@ -156,15 +169,33 @@ export default function App() {
   }, [snap.activePids, snap.volumes]);
   const masterDisplay = masterOverride != null ? masterOverride : derivedMaster;
 
+  function flushMasterFanout() {
+    if (masterFanoutTimer.current) {
+      clearTimeout(masterFanoutTimer.current);
+      masterFanoutTimer.current = null;
+    }
+    const level = masterPendingLevel.current;
+    masterPendingLevel.current = null;
+    if (level == null) return;
+    for (const name of snap.activeZones) setZoneVolume(name, level);
+  }
   function setMasterVolume(level) {
     draggingMaster.current = true;
     setMasterOverride(level);
-    for (const name of snap.activeZones) setZoneVolume(name, level);
+    masterPendingLevel.current = level;
+    if (masterFanoutTimer.current) clearTimeout(masterFanoutTimer.current);
+    masterFanoutTimer.current = setTimeout(flushMasterFanout, MASTER_DEBOUNCE_MS);
   }
   function endMasterDrag() {
+    // Always send the final value immediately — drop-the-finger should be
+    // the moment the volume locks in, not 80ms later.
+    flushMasterFanout();
     draggingMaster.current = false;
     setMasterOverride(null);
   }
+  useEffect(() => () => {
+    if (masterFanoutTimer.current) clearTimeout(masterFanoutTimer.current);
+  }, []);
 
   const showSpotifyBanner = !snap.spotifyConnected || reauthNeeded;
   const pinsCount = usePinsCount();
@@ -201,8 +232,34 @@ export default function App() {
 
   const art = displayedNowPlaying?.image_url || null;
 
+  // Optimistic seek: the next /me/player poll can be up to 5s away, so without
+  // an override the slider snaps back to the pre-seek position for a beat
+  // before the new sample arrives. Hold the seeked value as the source of truth
+  // until either (a) Spotify reports a progress >= the seeked value, or (b) a
+  // 6s safety timeout — whichever comes first. NowPlaying merges this in.
+  const [seekOverride, setSeekOverride] = useState(null);
+  useEffect(() => {
+    if (seekOverride == null) return;
+    if (playback?.is_playing && playback.progress_ms != null) {
+      // Cleared once Spotify catches up to the optimistic position. Allow 1s
+      // slack so a slightly-behind sample still clears it.
+      const elapsed = playback.is_playing ? Date.now() - playback.sampledAt : 0;
+      if ((playback.progress_ms + elapsed) >= seekOverride - 1000) {
+        setSeekOverride(null);
+        return;
+      }
+    }
+    const t = setTimeout(() => setSeekOverride(null), 6000);
+    return () => clearTimeout(t);
+  }, [seekOverride, playback?.progress_ms, playback?.sampledAt, playback?.is_playing]);
+
   async function seekTo(ms) {
-    try { await api.seek(ms); } catch (e) { showToast(e.message, 'error'); }
+    setSeekOverride(ms);
+    try { await api.seek(ms); }
+    catch (e) {
+      setSeekOverride(null);
+      showToast(e.message, 'error');
+    }
   }
 
   async function killSpotifySession() {
@@ -286,6 +343,7 @@ export default function App() {
               onMasterVolumeEnd={endMasterDrag}
               playback={playback}
               onSeek={seekTo}
+              seekOverride={seekOverride}
               onKillSession={killSpotifySession}
             />
           </CardBody>

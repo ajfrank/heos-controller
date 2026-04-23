@@ -1,6 +1,6 @@
-// Tiny JSON-on-disk store for non-secret per-installation data (recents).
-// Spotify tokens stay in their own file with 0600 perms; these are user-data
-// and don't need that.
+// Tiny JSON-on-disk store for per-installation data (recents, device cache).
+// Files contain user listening history and Spotify device IDs — not secrets,
+// but worth keeping out of other users' read paths on multi-user hosts.
 //
 // Writes are sync — these endpoints are low-traffic (a few writes per minute
 // at peak) and the JSON files stay small (≤a few KB).
@@ -20,6 +20,11 @@ export function readJson(name, fallback) {
 }
 
 export function writeJson(name, value) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(path.join(DATA_DIR, name), JSON.stringify(value, null, 2));
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  const file = path.join(DATA_DIR, name);
+  fs.writeFileSync(file, JSON.stringify(value, null, 2), { mode: 0o600 });
+  // writeFileSync only sets mode on creation; tighten if a pre-existing file
+  // had looser perms (matches the pattern in spotify.js).
+  try { fs.chmodSync(file, 0o600); }
+  catch (e) { console.warn('[persist] chmod failed:', e.message); }
 }
