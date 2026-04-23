@@ -48,7 +48,7 @@ export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid 
                 base: [
                   'w-full h-full min-h-[88px] border transition-colors',
                   active
-                    ? 'bg-primary/[0.12] border-primary/70'
+                    ? 'bg-transparent border-[2.5px] border-primary'
                     : 'bg-white/[0.03] border-white/10',
                 ].join(' '),
               }}
