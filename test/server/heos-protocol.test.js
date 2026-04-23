@@ -237,6 +237,47 @@ describe('HeosClient frame parser', () => {
     }
   });
 
+  // C5: when the TCP socket closes (overnight ETIMEDOUT, router reboot), the
+  // 5s reconnect timer must fire AND re-register for change events on the new
+  // socket. Without re-registration, the controller silently misses every
+  // volume/play-state event from then on.
+  it('re-registers for change events after a socket close → reconnect cycle', async () => {
+    const client = new HeosClient();
+    client.host = '127.0.0.1'; // _scheduleReconnect short-circuits without a host
+    const connectPromise = client._open();
+    const sock1 = netModule.__sockets[0];
+    await flush();
+    await connectPromise;
+
+    // Simulate the wire dropping. _open's 'close' handler nulls the socket
+    // and schedules the reconnect timer.
+    sock1.emit('close');
+    expect(client.socket).toBeNull();
+
+    // Quiet the warn from any in-flight rejections / send timeouts.
+    const origWarn = console.warn;
+    console.warn = vi.fn();
+    try {
+      // Fire the 5s reconnect timer. Its callback constructs sock2 and calls
+      // sock2.connect(), which schedules a setImmediate to emit 'connect'.
+      await vi.advanceTimersByTimeAsync(5000);
+      const sock2 = netModule.__sockets[1];
+      expect(sock2).toBeDefined();
+      expect(sock2).not.toBe(sock1);
+      // Explicitly drive the 'connect' so we don't depend on setImmediate
+      // ordering inside the async timer callback (fake timers + chained
+      // awaits is fiddly; this keeps the assertion deterministic).
+      sock2.emit('connect');
+      await flush();
+      await flush();
+
+      const writes = sock2.written.join('');
+      expect(writes).toMatch(/system\/register_for_change_events\?enable=on/);
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
   // M7: protect against unbounded buffer growth from a malformed remote.
   it('drops the buffer and keeps parsing after >64KB without a newline', async () => {
     const client = new HeosClient();

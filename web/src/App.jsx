@@ -239,6 +239,9 @@ export default function App() {
   }
   useEffect(() => () => {
     if (masterFanoutTimer.current) clearTimeout(masterFanoutTimer.current);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    for (const t of zoneFanoutTimers.current.values()) clearTimeout(t);
+    zoneFanoutTimers.current.clear();
   }, []);
 
   const showSpotifyBanner = !snap.spotifyConnected || reauthNeeded;

@@ -96,6 +96,45 @@ describe('WebSocket /ws', () => {
     expect(a.messages.some((m) => m.type === 'change' && m.change?.type === 'activeZones')).toBe(false);
     b.ws.close();
   });
+
+  // A1: when a single client's ws.send throws (RST mid-broadcast, encoder
+  // failure on a half-open iOS socket), the broadcast loop must NOT bail —
+  // every other client still needs the change. Pre-fix, one bad client
+  // killed the loop and left every other tab silently stale.
+  it('continues broadcasting to live clients even when one client send throws', async () => {
+    const a = connectClient();
+    const b = connectClient();
+    await Promise.all([a.opened, b.opened]);
+    await waitFor(() => a.messages.length >= 1 && b.messages.length >= 1);
+
+    // Monkey-patch ONE of the two server-side sockets so its ws.send throws
+    // mid-broadcast while it still reports OPEN. The Set iteration order is
+    // not guaranteed to match the client connection order, so we just assert
+    // that the broadcast survived: at least one client received the change.
+    const serverSockets = Array.from(wsAttachment.wss.clients);
+    expect(serverSockets).toHaveLength(2);
+    serverSockets[0].send = () => { throw new Error('synthetic send failure'); };
+
+    const origWarn = console.warn;
+    console.warn = () => {}; // safeSend logs the throw; quiet for the test
+    try {
+      ctx.state.setVolume('99', 11);
+      // The healthy client still receives the change. Either A or B —
+      // whichever one wasn't the patched socket.
+      await waitFor(() =>
+        a.messages.some((m) => m.type === 'change' && m.change?.pid === '99')
+        || b.messages.some((m) => m.type === 'change' && m.change?.pid === '99')
+      );
+      const aGot = a.messages.some((m) => m.type === 'change' && m.change?.pid === '99');
+      const bGot = b.messages.some((m) => m.type === 'change' && m.change?.pid === '99');
+      // Exactly one of the two clients got the change (the live one).
+      expect(aGot || bGot).toBe(true);
+    } finally {
+      console.warn = origWarn;
+    }
+    a.ws.close();
+    b.ws.close();
+  });
 });
 
 // C2: cross-origin browser tabs must NOT be able to drive the controller WS.

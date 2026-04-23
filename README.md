@@ -101,7 +101,7 @@ The Mac works fine for testing, but it sleeps. For a "just works, all the time" 
 5. **Clone, install, configure:**
    ```sh
    git clone https://github.com/ajfrank/heos-controller.git
-   cd heos-controller && npm install
+   cd heos-controller && npm ci
    cp .env.example .env  # then edit:
    #   SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET — same values as on the Mac
    #   WS_ALLOWED_ORIGINS=http://heos.local:8080,http://<pi-ip>:8080
@@ -126,7 +126,7 @@ That's it. From any device on the Wi-Fi, open `http://heos.local:8080` and add i
 
 ```sh
 cd ~/heos-controller
-git pull && npm install && npm run build:web
+git pull && npm ci && npm run build:web
 sudo systemctl restart heos-controller
 ```
 
