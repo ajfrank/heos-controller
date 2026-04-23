@@ -29,7 +29,7 @@ export function pinItem(item) {
   window.dispatchEvent(new CustomEvent('heos:pins-changed'));
 }
 
-export default function QuickPicks({ recents = [], onPlay }) {
+export default function QuickPicks({ recents = [], frequent = [], onPlay }) {
   const [pins, setPins] = useState(loadPins);
   const [editing, setEditing] = useState(false);
 
@@ -54,16 +54,21 @@ export default function QuickPicks({ recents = [], onPlay }) {
     api.removeRecent(uri).catch(() => {});
   }
 
-  // Dedup: a pinned item shouldn't also show in the recents row.
+  // Dedup: a pinned item shouldn't reappear in Often or Recents, and an item
+  // shown in Often shouldn't repeat in Recents either. Server-side dedup
+  // already drops anything in the recents top 4 from the frequent payload, but
+  // pinned is per-tablet localStorage so dedup against it has to happen here.
   const pinUris = new Set(pins.map((p) => p.uri));
-  const recentTiles = recents.filter((r) => !pinUris.has(r.uri));
+  const frequentTiles = frequent.filter((f) => !pinUris.has(f.uri));
+  const frequentUris = new Set(frequentTiles.map((f) => f.uri));
+  const recentTiles = recents.filter((r) => !pinUris.has(r.uri) && !frequentUris.has(r.uri));
 
   // Auto-exit edit mode when there's nothing left to edit.
   useEffect(() => {
-    if (editing && pins.length === 0 && recentTiles.length === 0) setEditing(false);
-  }, [editing, pins.length, recentTiles.length]);
+    if (editing && pins.length === 0 && recentTiles.length === 0 && frequentTiles.length === 0) setEditing(false);
+  }, [editing, pins.length, recentTiles.length, frequentTiles.length]);
 
-  if (!pins.length && !recentTiles.length) return null;
+  if (!pins.length && !recentTiles.length && !frequentTiles.length) return null;
 
   return (
     <div className="flex flex-col gap-2">
@@ -87,6 +92,25 @@ export default function QuickPicks({ recents = [], onPlay }) {
               onPlay={onPlay}
               onLongPress={() => unpin(item.uri)}
               onRemove={() => unpin(item.uri)}
+            />
+          ))}
+        </Row>
+      )}
+      {frequentTiles.length > 0 && (
+        <Row label="Often">
+          {frequentTiles.map((item) => (
+            <Tile
+              key={`often-${item.uri}`}
+              item={item}
+              editing={editing}
+              onPlay={onPlay}
+              // Long-press on an Often tile pins it permanently — natural
+              // promotion gesture matching the existing Recents behavior.
+              onLongPress={() => pinItem(item)}
+              // Remove gesture is suppressed for Often — there's no per-item
+              // remove (the row is auto-derived). The × is hidden via the
+              // null onRemove handler check inside Tile.
+              onRemove={null}
             />
           ))}
         </Row>
@@ -220,7 +244,7 @@ function Tile({ item, isPinned = false, editing = false, onPlay, onLongPress, on
         )}
       </motion.button>
       <AnimatePresence>
-        {editing && (
+        {editing && onRemove && (
           <motion.button
             type="button"
             key="remove"

@@ -55,6 +55,7 @@ export const api = {
     }),
   spotifyDisconnect: () =>
     jsonFetch('/api/spotify/disconnect', { method: 'POST' }),
+  stopAll: () => jsonFetch('/api/stop-all', { method: 'POST' }),
   removeRecent: (uri) =>
     jsonFetch('/api/recents/remove', {
       method: 'POST',

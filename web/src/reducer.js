@@ -16,6 +16,7 @@ export function applyChange(cur, change) {
     }
     case 'volume': return { ...cur, volumes: { ...cur.volumes, [change.pid]: change.level } };
     case 'recents': return { ...cur, recents: change.recents };
+    case 'frequent': return { ...cur, frequent: change.frequent };
     default: return cur;
   }
 }

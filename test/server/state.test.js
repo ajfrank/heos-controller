@@ -27,6 +27,7 @@ describe('State', () => {
       nowPlayingByPid: {},
       volumes: {},
       recents: [],
+      frequent: [],
     });
   });
 
@@ -146,6 +147,7 @@ describe('State', () => {
       nowPlayingByPid: { 1: { song: 'Hello' } },
       volumes: { 1: 80 },
       recents: [],
+      frequent: [],
     });
   });
 

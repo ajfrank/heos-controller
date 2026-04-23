@@ -18,6 +18,10 @@ class State extends EventEmitter {
     this.nowPlayingByPid = {};
     this.volumes = {};
     this.recents = [];
+    // Auto-derived "frequent plays" — top items by play count over a sliding
+    // window, computed in app.js on every play. Lives in state so the WS
+    // snapshot/change broadcast includes it without a separate channel.
+    this.frequent = [];
   }
 
   // Derived: flat unique pid list across active zones, in zone-config order.
@@ -107,6 +111,12 @@ class State extends EventEmitter {
     this.emit('change', { type: 'recents', recents });
   }
 
+  setFrequent(frequent) {
+    if (sameTileList(this.frequent, frequent)) return;
+    this.frequent = frequent;
+    this.emit('change', { type: 'frequent', frequent });
+  }
+
   snapshot() {
     return {
       players: this.players,
@@ -118,8 +128,19 @@ class State extends EventEmitter {
       nowPlayingByPid: this.nowPlayingByPid,
       volumes: this.volumes,
       recents: this.recents,
+      frequent: this.frequent,
     };
   }
+}
+
+function sameTileList(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].uri !== b[i].uri) return false;
+  }
+  return true;
 }
 
 function sameStringArray(a, b) {

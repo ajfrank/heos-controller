@@ -28,6 +28,7 @@ export default function App() {
     volumes: {},
     spotifyConnected: false,
     recents: [],
+    frequent: [],
   });
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
@@ -367,6 +368,18 @@ export default function App() {
     }
   }
 
+  async function stopEverywhere() {
+    try {
+      await api.stopAll();
+      // Server clears active zones, so the next snapshot/change reconciles
+      // the UI; in the meantime, clear locally so the button hides immediately.
+      setSnap((cur) => ({ ...cur, activeZones: [] }));
+      showToast('Stopped');
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
   async function killSpotifySession() {
     try {
       await api.spotifyDisconnect();
@@ -411,7 +424,25 @@ export default function App() {
 
         <Card radius="lg" classNames={sectionCardClasses}>
           <CardBody className={sectionCardClasses.body}>
-            <SectionTitle>Zones</SectionTitle>
+            <div className="flex items-center justify-between mb-3 ml-1">
+              <p className="text-tiny uppercase tracking-[0.1em] text-default-500 font-semibold">Zones</p>
+              <AnimatePresence>
+                {snap.activeZones.length > 0 && (
+                  <motion.button
+                    type="button"
+                    key="stop-all"
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    transition={{ duration: 0.12 }}
+                    onClick={stopEverywhere}
+                    className="text-tiny font-semibold tracking-wide text-white/55 hover:text-white px-1.5 py-0.5 rounded transition-colors"
+                  >
+                    Stop all
+                  </motion.button>
+                )}
+              </AnimatePresence>
+            </div>
             <ZoneGrid
               zones={snap.zones}
               activeZones={snap.activeZones}
@@ -430,11 +461,15 @@ export default function App() {
           </CardBody>
         </Card>
 
-        {(snap.recents?.length > 0 || pinsCount > 0) && (
+        {(snap.recents?.length > 0 || snap.frequent?.length > 0 || pinsCount > 0) && (
           <Card radius="lg" classNames={sectionCardClasses}>
             <CardBody className={sectionCardClasses.body}>
               <SectionTitle>Quick picks</SectionTitle>
-              <QuickPicks recents={snap.recents || []} onPlay={play} />
+              <QuickPicks
+                recents={snap.recents || []}
+                frequent={snap.frequent || []}
+                onPlay={play}
+              />
             </CardBody>
           </Card>
         )}

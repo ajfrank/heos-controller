@@ -37,6 +37,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const RECENTS_FILE = 'recents.json';
 const RECENTS_CAP = 8;
+// Append-only log of every successful play; used to derive the "Often" row in
+// Quick Picks. Capped at 200 so a year of heavy use stays under ~80KB on disk.
+// Window of 7 days + min-plays threshold keeps stale items from squatting in
+// the row long after the user has moved on.
+const PLAY_LOG_FILE = 'play-log.json';
+const PLAY_LOG_CAP = 200;
+const FREQUENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const FREQUENT_CAP = 4;
+const FREQUENT_MIN_PLAYS = 2;
 // Persisted pid → Spotify device_id map. Spotify's /me/player/devices only
 // lists currently-advertising Connect devices, but PUT /me/player accepts a
 // device_id from any device Spotify has seen recently and will trigger a
@@ -117,6 +126,18 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
         (typeof r.art !== 'string' ? false : r.art === '' || /^https:\/\//.test(r.art)),
     ),
   );
+
+  // Hydrate the play log + recompute "frequent" so the very first WS snapshot
+  // includes the Often row (otherwise a user reload would empty the row until
+  // their next play tap).
+  const playLog = (persist.read(PLAY_LOG_FILE, []) || []).filter(
+    (e) =>
+      e &&
+      typeof e.uri === 'string' && SPOTIFY_URI_RE.test(e.uri) &&
+      typeof e.ts === 'number' &&
+      typeof e.label === 'string',
+  );
+  state.setFrequent(computeFrequent(playLog, state.recents));
 
   app.get('/api/state', (_req, res) => {
     res.json({ ...state.snapshot(), spotifyConnected: spotify.isConnected() });
@@ -377,13 +398,27 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       // Log to recents only on success. Dedup by uri so replays don't cascade
       // a row of identical tiles to the top.
       if (label) {
+        const now = Date.now();
+        const recentEntry = { uri, label, sublabel: sublabel || '', art: art || '', badge: badge || '', ts: now };
         const next = [
-          { uri, label, sublabel: sublabel || '', art: art || '', badge: badge || '', ts: Date.now() },
+          recentEntry,
           ...state.recents.filter((r) => r.uri !== uri),
         ].slice(0, RECENTS_CAP);
         state.setRecents(next);
         try { persist.write(RECENTS_FILE, next); }
         catch (e) { console.warn('[heos] recents persist failed:', e.message); }
+
+        // Append-only log: every play counts, even replays. Used to derive the
+        // Often row. Read → append → truncate → write keeps it simple; the file
+        // is small and writes are infrequent (a few per minute at peak).
+        try {
+          const prior = persist.read(PLAY_LOG_FILE, []) || [];
+          const updated = [...prior, recentEntry].slice(-PLAY_LOG_CAP);
+          persist.write(PLAY_LOG_FILE, updated);
+          state.setFrequent(computeFrequent(updated, next));
+        } catch (e) {
+          console.warn('[heos] play log persist failed:', e.message);
+        }
       }
       res.json({ ok: true, via, device: resolvedDeviceName });
     } catch (e) {
@@ -394,6 +429,8 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
   // Remove a single recent (the wife taps × on a tile in Edit mode). Pinned
   // items live in localStorage so they're managed client-side; recents are
   // server state that must be persisted so the deletion survives reboots.
+  // Also drops the URI from the play log so a removed item doesn't keep
+  // resurfacing in the Often row.
   app.post('/api/recents/remove', async (req, res) => {
     const { uri } = req.body || {};
     if (!uri || typeof uri !== 'string') return res.status(400).json({ error: 'uri required' });
@@ -401,6 +438,13 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     state.setRecents(next);
     try { persist.write(RECENTS_FILE, next); }
     catch (e) { console.warn('[heos] recents persist failed:', e.message); }
+    try {
+      const log = (persist.read(PLAY_LOG_FILE, []) || []).filter((e) => e.uri !== uri);
+      persist.write(PLAY_LOG_FILE, log);
+      state.setFrequent(computeFrequent(log, next));
+    } catch (e) {
+      console.warn('[heos] play log persist failed:', e.message);
+    }
     res.json({ ok: true });
   });
 
@@ -430,6 +474,29 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     } catch (e) {
       sendErr(res, e);
     }
+  });
+
+  // One-tap "stop everywhere": pause via the HEOS leader (group sync stops
+  // the rest), then nudge Spotify in case the session is stranded on a
+  // device HEOS no longer leads, then clear active zones so the speakers
+  // are free for someone else to use without the wife having to deselect
+  // each room manually.
+  app.post('/api/stop-all', async (_req, res) => {
+    await serializeGroupOp(async () => {
+      try {
+        const pids = state.activePids.slice();
+        if (pids.length) {
+          try { await getH().setPlayState(pids[0], 'pause'); }
+          catch (e) { console.warn('[stop-all] HEOS pause failed:', e.message); }
+        }
+        // Spotify pause is fire-and-forget — "no active device" is fine.
+        try { await spotify.pauseActive(); } catch {}
+        state.setActiveZones([]);
+        res.json({ ok: true });
+      } catch (e) {
+        sendErr(res, e);
+      }
+    });
   });
 
   // Kill-switch for a stuck Spotify session. If playback gets stranded on
@@ -768,4 +835,42 @@ export function wireHeosEvents({ heos, state, log = console }) {
 
 function safeJson(s) {
   try { return JSON.parse(s); } catch { return s; }
+}
+
+// Derive the "Often" Quick Picks row from the play log. Counts plays in the
+// last 7 days, drops items in the recents top 4 (so the same tile doesn't
+// appear in two adjacent rows), keeps only items with ≥2 plays, and emits the
+// top 4 by count (ties broken by most-recent ts). Pinned dedup happens
+// client-side because pinned is per-tablet localStorage, not server state.
+export function computeFrequent(log, recents = []) {
+  if (!Array.isArray(log) || !log.length) return [];
+  const cutoff = Date.now() - FREQUENT_WINDOW_MS;
+  const recentTopUris = new Set((recents || []).slice(0, 4).map((r) => r.uri));
+  const tally = new Map(); // uri → { count, lastTs, latest entry }
+  for (const e of log) {
+    if (!e || typeof e.ts !== 'number' || e.ts < cutoff) continue;
+    if (recentTopUris.has(e.uri)) continue;
+    const cur = tally.get(e.uri);
+    if (cur) {
+      cur.count += 1;
+      if (e.ts > cur.lastTs) {
+        cur.lastTs = e.ts;
+        cur.entry = e;
+      }
+    } else {
+      tally.set(e.uri, { count: 1, lastTs: e.ts, entry: e });
+    }
+  }
+  return [...tally.values()]
+    .filter((v) => v.count >= FREQUENT_MIN_PLAYS)
+    .sort((a, b) => b.count - a.count || b.lastTs - a.lastTs)
+    .slice(0, FREQUENT_CAP)
+    .map((v) => ({
+      uri: v.entry.uri,
+      label: v.entry.label,
+      sublabel: v.entry.sublabel || '',
+      art: v.entry.art || '',
+      badge: v.entry.badge || '',
+      count: v.count,
+    }));
 }
