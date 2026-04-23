@@ -84,9 +84,54 @@ web/
     components/{NowPlaying,ZoneGrid,SearchResults,Backdrop}.jsx
 ```
 
-## Out of scope for v1 (easy follow-ups)
+## Always-on hosting on a Raspberry Pi
 
-- Always-on hosting on a Raspberry Pi (so the controller works when your Mac is asleep).
+The Mac works fine for testing, but it sleeps. For a "just works, all the time" setup, put the controller on a Raspberry Pi 5 (or 4) wired to your router. The whole thing fits on a microSD and pulls about 5 W.
+
+### One-time Pi setup
+
+1. **Flash the OS.** Raspberry Pi Imager → Pi OS Lite (64-bit). In the gear menu set: hostname `heos`, enable SSH, fill in your Wi-Fi creds (or skip if you'll use Ethernet — recommended). Boot the Pi, wait ~60s.
+2. **SSH in:** `ssh pi@heos.local`. (If `.local` doesn't resolve from your Mac, grab the IP from your router's admin UI.)
+3. **Reserve a stable IP** in your router's DHCP table — mDNS is usually fine, but a fixed IP is the painless fallback.
+4. **Install Node 20+:**
+   ```sh
+   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+   sudo apt install -y nodejs
+   ```
+5. **Clone, install, configure:**
+   ```sh
+   git clone https://github.com/ajfrank/heos-controller.git
+   cd heos-controller && npm install
+   cp .env.example .env  # then edit:
+   #   SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET — same values as on the Mac
+   #   WS_ALLOWED_ORIGINS=http://heos.local:8080,http://<pi-ip>:8080
+   npm run build:web
+   ```
+6. **One-time Spotify OAuth** (Spotify only allows loopback, so OAuth has to land on the Pi via an SSH tunnel):
+   - On the Pi: `node server/index.js`
+   - On the Mac, in another terminal: `ssh -L 8080:localhost:8080 pi@heos.local`
+   - On the Mac browser: open `http://127.0.0.1:8080`, click **Connect Spotify**, complete OAuth. The Pi writes `~/.heos-controller/spotify-tokens.json` and refreshes automatically forever after.
+   - `Ctrl-C` the Pi server.
+7. **Install the systemd unit** (auto-start at boot, restart on crash):
+   ```sh
+   sudo cp deploy/heos-controller.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now heos-controller
+   sudo journalctl -u heos-controller -f   # tail the logs; expect "[heos] connected"
+   ```
+
+That's it. From any device on the Wi-Fi, open `http://heos.local:8080` and add it to the Home Screen. See `docs/SETUP.md` for the iPad kiosk story.
+
+### Updating later
+
+```sh
+cd ~/heos-controller
+git pull && npm install && npm run build:web
+sudo systemctl restart heos-controller
+```
+
+## Out of scope for v1
+
 - Sleep timers, alarms, EQ.
 - Per-zone different audio sources at the same time.
 

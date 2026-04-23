@@ -1,8 +1,22 @@
 # HEOS Controller — Setup
 
 The controller itself needs no special setup beyond `npm install` + Spotify
-credentials (see README). The notes below cover the iPad wall-tablet kiosk
-story and the optional custom icon.
+credentials (see README). The notes below cover multi-device access, the
+iPad wall-tablet kiosk story, and the optional custom icon.
+
+## Multi-device access (iPhones + iPads)
+
+There's nothing per-device to configure beyond opening the URL — every device
+on the Wi-Fi hits the same controller. Three things to know:
+
+1. The URL is `http://heos.local:8080` (or `http://<your-mac>.local:8080` if
+   you're still hosting on the Mac). Add it to the Home Screen on each device.
+2. That origin must be listed in `WS_ALLOWED_ORIGINS` in `.env` — the server
+   defaults to localhost-only, so phones/iPads get a 403 on the WebSocket
+   handshake until the Pi/Mac hostname is added. See `.env.example` for the
+   pattern.
+3. Pinned Quick Picks live in the device's `localStorage` (per-device); the
+   recents row is server-side, so all devices see the same recent tracks.
 
 ## iPad kiosk mode
 

@@ -1,0 +1,29 @@
+# systemd unit for the HEOS Controller on a Raspberry Pi.
+# Install: sudo cp deploy/heos-controller.service /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#          sudo systemctl enable --now heos-controller
+# Logs:    sudo journalctl -u heos-controller -f
+#
+# ExecStart runs node directly (not `npm start`) so we don't rebuild the
+# web bundle on every restart — `npm run build:web` is a manual step after
+# `git pull`. EnvironmentFile pulls Spotify creds + WS_ALLOWED_ORIGINS
+# straight from the repo's .env.
+
+[Unit]
+Description=HEOS Controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/heos-controller
+EnvironmentFile=/home/pi/heos-controller/.env
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
