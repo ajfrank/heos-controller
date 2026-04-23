@@ -2,15 +2,20 @@ import React, { useEffect, useState } from 'react';
 import { Button, Image, Slider } from '@heroui/react';
 import { AnimatePresence, motion } from 'framer-motion';
 
-// Apple-Music-style slider: thin neutral track, white fill, small white thumb.
-// Every layer of the HeroUI Slider is overridden so the default primary tint
-// can never bleed through — keeps contrast constant across album accents.
-const sliderClassNames = {
+// Spotify-style progress slider: green fill, white thumb on a neutral track.
+const progressSliderClasses = {
   base: 'gap-0',
   track: 'bg-white/15 border-0 h-1',
+  filler: 'bg-primary',
+  thumb: 'w-3.5 h-3.5 bg-white border-0 shadow-sm after:bg-transparent after:w-9 after:h-9 data-[dragging=true]:scale-110',
+};
+
+// Volume slider stays white-on-white so it doesn't compete with the progress
+// bar for accent attention (matches both Spotify and Apple Music).
+const volumeSliderClasses = {
+  base: 'gap-0 flex-1',
+  track: 'bg-white/15 border-0 h-1',
   filler: 'bg-white',
-  // Touch target stays generous via the after pseudo (HIG ~44pt) without
-  // making the visible thumb feel chunky.
   thumb: 'w-3.5 h-3.5 bg-white border-0 shadow-sm after:bg-transparent after:w-9 after:h-9 data-[dragging=true]:scale-110',
 };
 
@@ -22,8 +27,11 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
   const title = np.song || np.title || '';
   const artist = np.artist || np.station || '';
   const art = np.image_url || '';
+  // Prefer Spotify's is_playing — HEOS state lags 1-2s behind Spotify Connect
+  // transitions (visible after a play/pause tap as a stuck icon). Fall back
+  // to HEOS state when Spotify hasn't reported yet.
   const stateStr = (np.state || '').toLowerCase();
-  const isPlaying = stateStr === 'play' || stateStr === 'playing';
+  const isPlaying = playback?.is_playing ?? (stateStr === 'play' || stateStr === 'playing');
   const progressMs = useInterpolatedProgress(playback);
   const durationMs = playback?.duration_ms ?? 0;
   const showBar = hasTrack && durationMs > 0;
@@ -101,7 +109,7 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
             step={1000}
             value={Math.min(progressMs, durationMs)}
             onChangeEnd={(v) => onSeek?.(Array.isArray(v) ? v[0] : v)}
-            classNames={sliderClassNames}
+            classNames={progressSliderClasses}
           />
           <div className="flex justify-between text-tiny text-white/50 tabular-nums px-0.5">
             <span>{fmtTime(progressMs)}</span>
@@ -157,7 +165,7 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
             value={masterVolume}
             onChange={(v) => onMasterVolume(Array.isArray(v) ? v[0] : v)}
             onChangeEnd={() => onMasterVolumeEnd?.()}
-            classNames={{ ...sliderClassNames, base: 'gap-0 flex-1' }}
+            classNames={volumeSliderClasses}
           />
           <VolumeHighIcon className="w-4 h-4 text-white/50 shrink-0" />
         </div>
@@ -187,8 +195,8 @@ function TransportIconButton({ label, pressed, onPress, children }) {
   );
 }
 
-// Spotify-style filled white play/pause. Always white-on-black so it reads
-// instantly regardless of the album-accent recolor. Slight grow on press.
+// Filled green focal control — Spotify's signature. Slight grow on press so
+// touch confirmation is visible without a heavy hover state.
 function PlayPauseButton({ isPlaying, onPress }) {
   return (
     <motion.button
@@ -196,8 +204,9 @@ function PlayPauseButton({ isPlaying, onPress }) {
       aria-label={isPlaying ? 'Pause' : 'Play'}
       onClick={onPress}
       whileTap={{ scale: 0.92 }}
+      whileHover={{ scale: 1.04 }}
       transition={{ type: 'spring', stiffness: 500, damping: 22 }}
-      className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-white text-black shadow-lg hover:bg-white/95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+      className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-primary text-primary-foreground shadow-[0_6px_18px_-4px_hsl(var(--heroui-primary)/0.55)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2 focus-visible:ring-offset-content1"
     >
       {isPlaying ? <PauseIcon className="w-6 h-6" /> : <PlayIcon className="w-6 h-6 ml-0.5" />}
     </motion.button>
