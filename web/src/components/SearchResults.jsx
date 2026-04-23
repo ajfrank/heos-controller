@@ -58,7 +58,7 @@ export default function SearchResults({ onPlay, onError }) {
       <VoiceSearchInput q={q} setQ={setQ} onError={onError} />
 
 
-      <div className="max-h-[50vh] overflow-y-auto -mx-2">
+      <div className="max-h-[38vh] overflow-y-auto -mx-2">
         {busy && (
           <div className="flex items-center gap-2 px-3 py-3 text-default-500">
             <Spinner color="primary" size="sm" /> Searching…
@@ -122,7 +122,7 @@ function ResultRow({ item, onPlay }) {
       shadow="none"
       classNames={{ base: 'w-full bg-transparent hover:bg-content2/60 active:bg-content2 transition-colors' }}
     >
-      <div className="flex items-center gap-3 px-2 py-2.5 w-full min-h-[60px]">
+      <div className="flex items-center gap-3 px-2 py-1.5 w-full min-h-[52px]">
         {item.art ? (
           <Image
             src={item.art}
