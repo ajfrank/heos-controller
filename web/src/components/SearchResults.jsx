@@ -58,7 +58,10 @@ export default function SearchResults({ onPlay, onError }) {
       <VoiceSearchInput q={q} setQ={setQ} onError={onError} />
 
 
-      <div className="max-h-[37vh] overflow-y-auto -mx-2">
+      {/* Fixed-pixel height locks "exactly 8 rows" across viewports — vh-based
+          sizing miscounts on shorter screens. Row = max(44px image + 12px
+          py-1.5, 52px min-h) = 56px, so 8 rows = 448px. */}
+      <div className="max-h-[448px] overflow-y-auto -mx-2">
         {busy && (
           <div className="flex items-center gap-2 px-3 py-3 text-default-500">
             <Spinner color="primary" size="sm" /> Searching…
