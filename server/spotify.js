@@ -364,6 +364,11 @@ export async function getPlayback() {
     image_url: item.album?.images?.[0]?.url || '',
     shuffle_state: !!r.shuffle_state,
     repeat_state: r.repeat_state || 'off',
+    // Active Connect device — surfaced so the client can detect when a
+    // foreign device (Echo Dot, phone, laptop) steals the session away from
+    // the HEOS speaker we just transferred to.
+    device_id: r.device?.id || null,
+    device_name: r.device?.name || '',
   };
 }
 

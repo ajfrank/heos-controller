@@ -106,6 +106,14 @@ export default function App() {
   // Token bumped after every successful /api/play so usePlaybackProgress
   // re-fetches immediately instead of finishing its current 5s sleep.
   const [playBumpToken, setPlayBumpToken] = useState(0);
+  // Auto-recovery for the "Spotify session got stolen" case. After a
+  // successful /api/play, capture the device id we transferred to and the
+  // wall-time the play landed; the playback poll effect compares this to the
+  // device Spotify reports as active. If a foreign device (Echo Dot, phone,
+  // laptop) has hijacked the session within ~10s of our play, we pause the
+  // session and toast — without forcing the wife to dig out the official
+  // Spotify app to figure out what happened.
+  const expectedDevice = useRef(null); // { id, name, deadline }
   async function play(itemBody) {
     if (playInflight.current) return;
     if (!snap.activeZones.length) {
@@ -129,9 +137,16 @@ export default function App() {
     // wondering if her tap registered. Cancelled the moment play resolves.
     const wakeHint = setTimeout(() => showToast('Waking speakers…'), 700);
     try {
-      await api.play(itemBody);
+      const r = await api.play(itemBody);
       clearTimeout(wakeHint);
       showToast('Playing');
+      if (r?.device_id) {
+        expectedDevice.current = {
+          id: r.device_id,
+          name: r.device || '',
+          deadline: Date.now() + 10_000,
+        };
+      }
       setPlayBumpToken((x) => x + 1);
     } catch (e) {
       clearTimeout(wakeHint);
@@ -288,6 +303,28 @@ export default function App() {
   const latestPlaybackSongRef = useRef('');
   useEffect(() => { latestPlaybackSongRef.current = playback?.song || ''; }, [playback?.song]);
 
+  // Foreign-device auto-recovery. Within 10s of a successful play, if Spotify
+  // reports the active device is something other than what we transferred to,
+  // pause the session and surface a clear toast. Outside that window we trust
+  // the user (they may have intentionally moved playback in the Spotify app).
+  useEffect(() => {
+    const exp = expectedDevice.current;
+    if (!exp) return;
+    if (Date.now() > exp.deadline) { expectedDevice.current = null; return; }
+    if (!playback?.device_id) return;
+    if (playback.device_id === exp.id) {
+      expectedDevice.current = null;
+      return;
+    }
+    // Mismatch — Spotify session ended up on a non-HEOS device. Pause and
+    // surface what happened. Single-shot: clear before firing so a second
+    // poll in the same window doesn't toast twice.
+    expectedDevice.current = null;
+    api.spotifyDisconnect().catch(() => {});
+    const where = playback.device_name ? ` (on ${playback.device_name})` : '';
+    showToast(`Spotify session moved${where} — paused`, 'error');
+  }, [playback?.device_id]);
+
   // Clear the optimistic overlay as soon as Spotify reports either:
   //  (a) a track different from the one that was playing at pick time
   //      (Spotify confirmed the new playback landed), or
@@ -375,15 +412,6 @@ export default function App() {
       // the UI; in the meantime, clear locally so the button hides immediately.
       setSnap((cur) => ({ ...cur, activeZones: [] }));
       showToast('Stopped');
-    } catch (e) {
-      showToast(e.message, 'error');
-    }
-  }
-
-  async function killSpotifySession() {
-    try {
-      await api.spotifyDisconnect();
-      showToast('Spotify session stopped');
     } catch (e) {
       showToast(e.message, 'error');
     }
@@ -485,7 +513,6 @@ export default function App() {
               playback={playback}
               onSeek={seekTo}
               seekOverride={seekOverride}
-              onKillSession={killSpotifySession}
             />
           </CardBody>
         </Card>

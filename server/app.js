@@ -420,7 +420,7 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
           console.warn('[heos] play log persist failed:', e.message);
         }
       }
-      res.json({ ok: true, via, device: resolvedDeviceName });
+      res.json({ ok: true, via, device: resolvedDeviceName, device_id: resolvedDeviceId });
     } catch (e) {
       sendErr(res, e);
     }

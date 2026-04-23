@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Image, Slider } from '@heroui/react';
+import { Image, Slider } from '@heroui/react';
 import { AnimatePresence, motion } from 'framer-motion';
 
 // Spotify-style progress slider: green fill, white thumb on a neutral track.
@@ -21,7 +21,7 @@ const volumeSliderClasses = {
 
 const REPEAT_CYCLE = { off: 'context', context: 'track', track: 'off' };
 
-export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMasterVolume, onMasterVolumeEnd, playback, onSeek, seekOverride, onKillSession }) {
+export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMasterVolume, onMasterVolumeEnd, playback, onSeek, seekOverride }) {
   const np = nowPlaying || {};
   const hasTrack = np.song || np.title;
   const title = np.song || np.title || '';
@@ -133,20 +133,6 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
             <p className="text-white/60">Nothing playing — pick a zone and search for music.</p>
           )}
         </motion.div>
-        {onKillSession && (
-          <Button
-            isIconOnly
-            variant="light"
-            size="sm"
-            radius="full"
-            aria-label="Kill Spotify session"
-            title="Force-stop Spotify on whichever device has it"
-            onPress={onKillSession}
-            className="text-white/40 hover:text-white/80 shrink-0"
-          >
-            <PowerIcon className="w-4 h-4" />
-          </Button>
-        )}
       </div>
 
       {showBar && (
@@ -346,15 +332,6 @@ function VolumeHighIcon(props) {
     </svg>
   );
 }
-function PowerIcon(props) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M12 3v9" />
-      <path d="M5.5 7a8 8 0 1013 0" />
-    </svg>
-  );
-}
-
 // Smoothly tick the bar between 5s polls. Anchors to the latest sample's wall
 // time and clamps so we never visually overshoot the duration.
 function useInterpolatedProgress(playback) {
