@@ -6,6 +6,21 @@ import * as spotify from './spotify.js';
 import { state } from './state.js';
 import { createApp, attachWebSocket, initHeosState, refreshDeviceCache } from './app.js';
 
+// Crash loudly. Node 20+ already exits on unhandledRejection, but the default
+// stack dump lands without a marker line — on a headless Pi reading via
+// journalctl, a single grep-able [fatal] tag makes the difference between a
+// 30-second triage and a half-hour scroll. We exit(1) so systemd's
+// Restart=on-failure fires; swallowing would leave the process in an unknown
+// state.
+process.on('uncaughtException', (e) => {
+  console.error('[fatal] uncaughtException:', e?.stack || e);
+  process.exit(1);
+});
+process.on('unhandledRejection', (e) => {
+  console.error('[fatal] unhandledRejection:', e?.stack || e);
+  process.exit(1);
+});
+
 const PORT = Number(process.env.PORT || 8080);
 
 let heosClient = null;

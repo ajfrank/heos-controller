@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 
 const DATA_DIR = path.join(os.homedir(), '.heos-controller');
 
@@ -27,7 +28,10 @@ export function writeJson(name, value) {
   // entry. Write to a sibling .tmp first, then rename — rename is atomic on
   // ext4/APFS, so readers see either the old version or the new one, never a
   // half-written one.
-  const tmp = file + '.tmp';
+  // Per-writer tmp suffix (pid + random) so the play handler and the 60s
+  // background device-cache poll can't clobber each other's tmp file when
+  // they both target spotify-devices.json at the same instant.
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
   try { fs.chmodSync(tmp, 0o600); }
   catch (e) { console.warn('[persist] chmod failed:', e.message); }

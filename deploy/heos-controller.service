@@ -31,6 +31,10 @@ StartLimitBurst=5
 StartLimitIntervalSec=300
 StandardOutput=journal
 StandardError=journal
+# Defense-in-depth memory cap. Steady-state working set is ~50MB; 512M leaves
+# ~10× headroom and ensures a runaway leak gets OOM-killed (and restarted)
+# rather than starving the rest of the Pi.
+MemoryMax=512M
 
 # Process hardening. The controller is a pure user-space Node app — it
 # doesn't need raw kernel access, /tmp shared with other services, or write

@@ -13,15 +13,30 @@ let cached = null;
 function loadConfig() {
   if (cached) return cached;
   const file = path.join(__dirname, 'zones.json');
-  const raw = fs.readFileSync(file, 'utf8');
-  const parsed = JSON.parse(raw);
-  if (!parsed?.zones || !Array.isArray(parsed.zones)) {
-    throw new Error('zones.json: missing top-level "zones" array');
+  // Bad JSON / missing file is rare but recoverable on a long-running Pi
+  // (SD-card bit rot, an aborted hand-edit). Falling back to [] keeps the
+  // HTTP server, /healthz, and OAuth flow alive so the user has a way back
+  // in instead of a tight retry loop in journalctl. The log line includes
+  // a one-shot recovery command so the fix doesn't require remembering
+  // the path.
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed?.zones || !Array.isArray(parsed.zones)) {
+      throw new Error('missing top-level "zones" array');
+    }
+    cached = parsed.zones.map((z) => ({
+      name: String(z.name),
+      speakers: (z.speakers || []).map(String),
+    }));
+  } catch (e) {
+    console.warn(
+      `[zones] zones.json unreadable (${e.message}) — booting with no zones; ` +
+        'the UI will show an empty state. Restore from git: ' +
+        'cd ~/heos-controller && git checkout server/zones.json',
+    );
+    cached = [];
   }
-  cached = parsed.zones.map((z) => ({
-    name: String(z.name),
-    speakers: (z.speakers || []).map(String),
-  }));
   return cached;
 }
 
