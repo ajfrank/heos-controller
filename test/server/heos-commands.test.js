@@ -146,12 +146,12 @@ describe('HeosClient.applyGroup', () => {
     expect(sock.written.some((w) => w.includes('group/set_group?pid=1111,2222,3333'))).toBe(true);
   });
 
-  it('retries set_group once on eid=13 (HEOS busy with internal state change)', async () => {
+  it('retries set_group on eid=13 (HEOS busy with internal state change)', async () => {
     // Repro: user starts a song in one zone (Spotify Connect wakes the
     // speaker; HEOS fires its own internal commands), then immediately
     // toggles zones. The first set_group lands while HEOS is still
     // processing the wake fallout and gets eid=13. _doApplyGroup must
-    // sleep briefly and retry once so the user never sees the error.
+    // sleep briefly and retry so the user never sees the error.
     const { client, sock } = await connectedClient();
     let call = 0;
     sock.onWrite(() => {
@@ -165,6 +165,45 @@ describe('HeosClient.applyGroup', () => {
     await p;
     const setCalls = sock.written.filter((w) => w.includes('group/set_group?pid=1111,2222,3333'));
     expect(setCalls.length).toBe(2);
+  });
+
+  // Real-world report: a single 800ms retry wasn't enough when HEOS was mid-
+  // Spotify-Connect-wake (busy window ~2-3s). _doApplyGroup now retries up to
+  // three times with growing delays (800 → 1600 → 2800ms, cumulative ~5.2s).
+  it('retries set_group up to three times on persistent eid=13', async () => {
+    const { client, sock } = await connectedClient();
+    let call = 0;
+    sock.onWrite(() => {
+      const i = call++;
+      if (i === 0) return FRAME.getGroups_kitchenLR;
+      // First three set_group attempts return EID13; fourth succeeds.
+      if (i <= 3) return FRAME.setGroup_eid13;
+      return FRAME.setGroup_success;
+    });
+    const p = client.applyGroup([1111, 2222, 3333]);
+    // Cumulative delays: 800 + 1600 + 2800 = 5200ms.
+    await vi.advanceTimersByTimeAsync(5300);
+    await p;
+    const setCalls = sock.written.filter((w) => w.includes('group/set_group?pid=1111,2222,3333'));
+    expect(setCalls.length).toBe(4); // initial + 3 retries
+  });
+
+  // Surface the busy error after exhausting retries — don't silently hang or
+  // try forever. The user can retry manually if HEOS is genuinely stuck.
+  it('surfaces eid=13 to the caller after all retries are exhausted', async () => {
+    const { client, sock } = await connectedClient();
+    let call = 0;
+    sock.onWrite(() => {
+      const i = call++;
+      if (i === 0) return FRAME.getGroups_kitchenLR;
+      return FRAME.setGroup_eid13; // every attempt fails
+    });
+    const p = client.applyGroup([1111, 2222, 3333]);
+    const expectation = expect(p).rejects.toThrow(/busy/i);
+    await vi.advanceTimersByTimeAsync(5300);
+    await expectation;
+    const setCalls = sock.written.filter((w) => w.includes('group/set_group?pid=1111,2222,3333'));
+    expect(setCalls.length).toBe(4); // initial + 3 retries, all rejected
   });
 
   it('coalesces concurrent applyGroup calls — only the latest pids run after the in-flight one finishes', async () => {

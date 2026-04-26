@@ -438,11 +438,23 @@ class HeosClient extends EventEmitter {
         return this.setGroup(pids);
       }
       // eid=13 = "Processing previous command", eid=11 = "System busy" — both
-      // are transient busy signals (often Spotify Connect wake fallout). Wait
-      // briefly and retry once; the busy window is typically <1s.
+      // are transient busy signals. Typical busy window is <1s but can stretch
+      // to 3-4s when HEOS is mid-Spotify-Connect-wake or reforming a multi-zone
+      // group. One 800ms retry left users seeing the busy banner for legitimate
+      // transient cases; three retries with growing delays (cumulative ~5.2s)
+      // cover ~all real-world windows before giving up.
       if (e.code === 'EID13' || e.code === 'EID11') {
-        await new Promise((r) => setTimeout(r, 800));
-        return this.setGroup(pids);
+        let lastErr = e;
+        for (const delay of [800, 1600, 2800]) {
+          await new Promise((r) => setTimeout(r, delay));
+          try {
+            return await this.setGroup(pids);
+          } catch (e2) {
+            if (e2.code !== 'EID13' && e2.code !== 'EID11') throw e2;
+            lastErr = e2;
+          }
+        }
+        throw lastErr;
       }
       throw e;
     }
