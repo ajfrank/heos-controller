@@ -3,6 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MockSocket } from '../helpers/mock-socket.js';
+import { connectedClient as openClient, flush } from '../helpers/heos-test-client.js';
 import { FRAME, chunks } from '../fixtures/heos-frames.js';
 
 // Mock node:net so `new net.Socket()` yields our MockSocket. Tests grab the
@@ -37,19 +38,14 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function flush() {
-  // Drain microtasks + setImmediate (used by MockSocket.connect) without advancing the clock.
-  await vi.advanceTimersByTimeAsync(0);
-  await Promise.resolve();
+// `flush` and `connectedClient` are imported from helpers/heos-test-client.js.
+async function connectedClient() {
+  return openClient(HeosClient, netModule);
 }
 
 describe('HeosClient frame parser', () => {
   it('parses a single frame and resolves the matching pending command', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     const sendPromise = client.send('player/get_players');
     sock.feed(FRAME.getPlayers);
@@ -60,11 +56,7 @@ describe('HeosClient frame parser', () => {
   });
 
   it('handles a frame split across two reads (partial buffering)', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     const sendPromise = client.send('player/get_volume', { pid: 1111 });
     const [a, b] = chunks(FRAME.getVolume_42, [20]);
@@ -82,11 +74,7 @@ describe('HeosClient frame parser', () => {
   });
 
   it('handles two frames arriving in a single read', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     const p1 = client.send('player/get_players');
     const p2 = client.send('player/get_volume', { pid: 1111 });
@@ -98,11 +86,7 @@ describe('HeosClient frame parser', () => {
   });
 
   it('emits "event" for unsolicited event/* frames without resolving any pending', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     const onEvent = vi.fn();
     client.on('event', onEvent);
@@ -112,11 +96,7 @@ describe('HeosClient frame parser', () => {
   });
 
   it('rejects a pending command with a translated message on syserrno=-9', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     const sendPromise = client.send('group/set_group', { pid: '1,2' });
     sock.feed(FRAME.setGroup_syserrno9);
@@ -124,11 +104,7 @@ describe('HeosClient frame parser', () => {
   });
 
   it('rejects with a generic message on other failures', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     const sendPromise = client.send('player/get_players');
     sock.feed('{"heos":{"command":"player/get_players","result":"fail","message":"boom"}}\r\n');
@@ -136,11 +112,7 @@ describe('HeosClient frame parser', () => {
   });
 
   it('skips malformed (non-JSON) lines without crashing the parser', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     const sendPromise = client.send('player/get_players');
     sock.feed('not-json\r\n' + FRAME.getPlayers);
@@ -149,10 +121,7 @@ describe('HeosClient frame parser', () => {
   });
 
   it('times out a pending send after 8s and rejects', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    await flush();
-    await connectPromise;
+    const { client } = await connectedClient();
 
     const sendPromise = client.send('player/get_players');
     const expectation = expect(sendPromise).rejects.toThrow(/timed out/);
@@ -164,11 +133,7 @@ describe('HeosClient frame parser', () => {
   // late-arriving response is consumed in order, not handed to the next live
   // waiter. Splicing on timeout used to corrupt every subsequent response.
   it('preserves FIFO when an early command times out and its response arrives later', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     // p1 will time out before any response arrives.
     const p1 = client.send('player/get_volume', { pid: 1111 });
@@ -197,11 +162,7 @@ describe('HeosClient frame parser', () => {
   // M6: two same-name commands in flight must each resolve with their own
   // response. Strict FIFO is the right policy on a single HEOS connection.
   it('resolves two same-name commands in FIFO order', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     const p1 = client.send('player/get_volume', { pid: 1111 });
     const p2 = client.send('player/get_volume', { pid: 2222 });
@@ -218,11 +179,7 @@ describe('HeosClient frame parser', () => {
   // must not crash the process — they did before we attached a persistent
   // 'error' handler in _open().
   it('does not throw on a post-connect socket error and rejects in-flight commands', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     const origWarn = console.warn;
     console.warn = vi.fn();
@@ -280,11 +237,7 @@ describe('HeosClient frame parser', () => {
 
   // M7: protect against unbounded buffer growth from a malformed remote.
   it('drops the buffer and keeps parsing after >64KB without a newline', async () => {
-    const client = new HeosClient();
-    const connectPromise = client._open();
-    const sock = netModule.__sockets[0];
-    await flush();
-    await connectPromise;
+    const { client, sock } = await connectedClient();
 
     // Quiet the warn from the dropped buffer.
     const origWarn = console.warn;

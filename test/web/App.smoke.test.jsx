@@ -1,70 +1,24 @@
 // Smoke test for App: mounts, hydrates from api.state(), receives a WS snapshot,
 // renders zones, and shows a toast when Play is pressed with no active zones.
 
-import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { HeroUIProvider } from '@heroui/react';
+import { screen, waitFor, act } from '@testing-library/react';
+import { createApiMock, setupAppTest, renderApp } from './helpers/render-app.jsx';
 
-let onMessageCb = null;
-const wsCloseSpy = vi.fn();
-
-vi.mock('../../web/src/api.js', () => ({
-  api: {
-    state: vi.fn(),
-    setActive: vi.fn().mockResolvedValue({ ok: true }),
-    search: vi.fn().mockResolvedValue({ results: {} }),
-    play: vi.fn().mockResolvedValue({ ok: true }),
-    control: vi.fn().mockResolvedValue({ ok: true }),
-    setVolume: vi.fn().mockResolvedValue({ ok: true }),
-    seek: vi.fn().mockResolvedValue({ ok: true }),
-    playbackPosition: vi.fn().mockResolvedValue({ playback: null }),
-    spotifyDisconnect: vi.fn().mockResolvedValue({ ok: true }),
-  },
-  connectWS: vi.fn((cb) => {
-    onMessageCb = cb;
-    // Mimic the bootstrap snapshot the real server sends on connect.
-    queueMicrotask(() => cb({
-      type: 'snapshot',
-      state: {
-        players: [{ pid: '1', name: 'Kitchen' }, { pid: '2', name: 'Living Room' }],
-        zones: [
-          { name: 'Upstairs', pids: ['1', '2'] },
-        ],
-        activeZones: [],
-        activePids: [],
-        nowPlaying: null,
-        nowPlayingByPid: {},
-        volumes: {},
-        spotifyConnected: true,
-      },
-    }));
-    return { close: wsCloseSpy };
-  }),
-  setupWakeLock: vi.fn(),
-  SPOTIFY_REAUTH_EVENT: 'heos:spotify-reauth',
-}));
-
-// Backdrop renders a heavy <img> + canvas; stub it for the smoke test.
-vi.mock('../../web/src/components/Backdrop.jsx', () => ({
-  default: () => null,
-}));
+vi.mock('../../web/src/api.js', () => createApiMock());
+vi.mock('../../web/src/components/Backdrop.jsx', () => ({ default: () => null }));
 
 import App from '../../web/src/App.jsx';
 import { api, connectWS } from '../../web/src/api.js';
 
-function renderApp() {
-  return render(
-    <HeroUIProvider>
-      <App />
-    </HeroUIProvider>,
-  );
-}
-
+let testCtx;
 beforeEach(() => {
-  onMessageCb = null;
-  wsCloseSpy.mockClear();
+  testCtx = setupAppTest({
+    snapshot: {
+      players: [{ pid: '1', name: 'Kitchen' }, { pid: '2', name: 'Living Room' }],
+      zones: [{ name: 'Upstairs', pids: ['1', '2'] }],
+    },
+  });
 });
 
 afterEach(() => {
@@ -73,16 +27,16 @@ afterEach(() => {
 
 describe('App smoke', () => {
   it('renders zones once the WS snapshot arrives', async () => {
-    renderApp();
+    renderApp(App);
     await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     expect(connectWS).toHaveBeenCalled();
   });
 
   it('updates state when a follow-up WS snapshot arrives', async () => {
-    renderApp();
+    renderApp(App);
     await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     act(() => {
-      onMessageCb({
+      testCtx.triggerWsMessage({
         type: 'snapshot',
         state: {
           players: [{ pid: '9', name: 'Patio' }],
@@ -100,20 +54,14 @@ describe('App smoke', () => {
   });
 
   it('shows the Spotify-connect banner when spotifyConnected is false', async () => {
-    renderApp();
-    // Override the snapshot the mocked connectWS just queued.
+    renderApp(App);
     await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     act(() => {
-      onMessageCb({
+      testCtx.triggerWsMessage({
         type: 'snapshot',
         state: {
-          players: [],
-          zones: [],
-          activeZones: [],
-          activePids: [],
-          nowPlaying: null,
-          nowPlayingByPid: {},
-          volumes: {},
+          players: [], zones: [], activeZones: [], activePids: [],
+          nowPlaying: null, nowPlayingByPid: {}, volumes: {},
           spotifyConnected: false,
         },
       });
@@ -122,20 +70,23 @@ describe('App smoke', () => {
   });
 
   it('applies a WS change event by reducing into snap', async () => {
-    renderApp();
+    renderApp(App);
     await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     act(() => {
-      onMessageCb({ type: 'change', change: { type: 'zones', zones: [{ name: 'Garage', pids: ['7'] }] } });
+      testCtx.triggerWsMessage({
+        type: 'change',
+        change: { type: 'zones', zones: [{ name: 'Garage', pids: ['7'] }] },
+      });
     });
     expect(screen.getByText('Garage')).toBeInTheDocument();
     expect(screen.queryByText('Upstairs')).not.toBeInTheDocument();
   });
 
   it('cleans up the WS connection on unmount', async () => {
-    const { unmount } = renderApp();
+    const { unmount } = renderApp(App);
     await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     unmount();
-    expect(wsCloseSpy).toHaveBeenCalled();
+    expect(testCtx.getWsCloseSpy()).toHaveBeenCalled();
   });
 });
 
@@ -143,12 +94,8 @@ describe('App smoke', () => {
 // rely on the WS handshake's first frame.
 describe('App does not call api.state() during mount', () => {
   it('mounts without calling the REST snapshot endpoint', async () => {
-    renderApp();
+    renderApp(App);
     await waitFor(() => expect(screen.getByText('Upstairs')).toBeInTheDocument());
     expect(api.state).not.toHaveBeenCalled();
   });
 });
-
-// H5 is verified separately in App.master-volume.test.jsx — it mocks
-// NowPlaying to drive the master-volume callbacks directly, since HeroUI's
-// Slider doesn't respond to keyboard events under jsdom.

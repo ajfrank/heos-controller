@@ -3,6 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MockSocket } from '../helpers/mock-socket.js';
+import { connectedClient as openClient } from '../helpers/heos-test-client.js';
 import { FRAME } from '../fixtures/heos-frames.js';
 
 vi.mock('node:net', () => {
@@ -32,11 +33,7 @@ afterEach(() => {
 });
 
 async function connectedClient() {
-  const client = new HeosClient();
-  const p = client._open();
-  await vi.advanceTimersByTimeAsync(0);
-  await p;
-  return { client, sock: netModule.__sockets[0] };
+  return openClient(HeosClient, netModule);
 }
 
 describe('HeosClient command builders', () => {

@@ -53,14 +53,27 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// Most tests need a valid token on disk before exercising any API method.
+// Hoisted out of per-describe blocks so search / getDevices / refresh /
+// transport / api-retry can share one definition.
+function seedTokens(overrides = {}) {
+  const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
+  fakeFiles[tokenPath] = JSON.stringify({
+    access_token: 'a',
+    refresh_token: 'r',
+    expires_at: Date.now() + 60_000,
+    ...overrides,
+  });
+  return tokenPath;
+}
+
 describe('isConnected / loadTokens', () => {
   it('returns false when no token file exists', () => {
     expect(spotify.isConnected()).toBe(false);
   });
 
   it('returns true when token file exists', () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
+    seedTokens();
     expect(spotify.isConnected()).toBe(true);
   });
 });
@@ -119,8 +132,7 @@ describe('exchangeCode', () => {
 
 describe('search', () => {
   it('builds /search?q=&type= and returns the parsed payload', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
+    seedTokens();
     fetchMock.route('GET', '/v1/search', searchFixture);
     const r = await spotify.search('chill', ['track', 'playlist', 'album']);
     const url = new URL(fetchMock.calls()[0][0]);
@@ -132,8 +144,7 @@ describe('search', () => {
   // M4: untrusted values in `types` would otherwise be passed straight through
   // to Spotify's API and cause a 4xx that confuses the user.
   it('drops invalid types from the query', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
+    seedTokens();
     fetchMock.route('GET', '/v1/search', searchFixture);
     await spotify.search('chill', ['track', 'evil', 'album']);
     const url = new URL(fetchMock.calls()[0][0]);
@@ -141,16 +152,14 @@ describe('search', () => {
   });
 
   it('throws if no types remain after filtering', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
+    seedTokens();
     await expect(spotify.search('q', ['evil', 'bogus'])).rejects.toThrow(/at least one valid type/);
   });
 });
 
 describe('getDevices', () => {
   it('returns devices from /me/player/devices', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
+    seedTokens();
     fetchMock.route('GET', '/v1/me/player/devices', devicesFixture);
     const d = await spotify.getDevices();
     expect(d).toHaveLength(3);
@@ -158,8 +167,7 @@ describe('getDevices', () => {
   });
 
   it('throws a friendly message on 404 "Service not found" (no Connect devices yet)', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
+    seedTokens();
     fetchMock.route('GET', '/v1/me/player/devices', { status: 404, body: '{"error":{"status":404,"message":"Service not found"}}' });
     await expect(spotify.getDevices()).rejects.toThrow(/No Spotify Connect devices registered/);
   });
@@ -167,24 +175,21 @@ describe('getDevices', () => {
 
 describe('findDeviceForPlayer', () => {
   it('matches case-insensitively and trims whitespace', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
+    seedTokens();
     fetchMock.route('GET', '/v1/me/player/devices', devicesFixture);
     const d = await spotify.findDeviceForPlayer('  living room  ');
     expect(d.id).toBe('dev-living');
   });
 
   it('falls back to substring match', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
+    seedTokens();
     fetchMock.route('GET', '/v1/me/player/devices', devicesFixture);
     const d = await spotify.findDeviceForPlayer('Echo');
     expect(d.id).toBe('dev-echo');
   });
 
   it('returns null when nothing matches', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
+    seedTokens();
     fetchMock.route('GET', '/v1/me/player/devices', devicesFixture);
     expect(await spotify.findDeviceForPlayer('Bedroom')).toBeNull();
   });
@@ -192,8 +197,7 @@ describe('findDeviceForPlayer', () => {
 
 describe('refresh on expired token', () => {
   it('calls the refresh endpoint and re-attempts the API call', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'old', refresh_token: 'r', expires_at: Date.now() - 1000 });
+    const tokenPath = seedTokens({ access_token: 'old', expires_at: Date.now() - 1000 });
     fetchMock.route('POST', 'accounts.spotify.com/api/token', () => ({
       access_token: 'new', refresh_token: 'r2', expires_in: 3600,
     }));
@@ -210,8 +214,7 @@ describe('refresh on expired token', () => {
   // them gets invalidated and the user is locked out. Single-flight ensures
   // exactly one POST hits the token endpoint.
   it('serializes concurrent token refreshes (mutex)', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'old', refresh_token: 'r', expires_at: Date.now() - 1000 });
+    seedTokens({ access_token: 'old', expires_at: Date.now() - 1000 });
     fetchMock.route('POST', 'accounts.spotify.com/api/token', async () => {
       // Hold open long enough that all 5 callers race.
       await new Promise((r) => setTimeout(r, 10));
@@ -228,11 +231,6 @@ describe('refresh on expired token', () => {
 });
 
 describe('transport calls', () => {
-  function seedTokens() {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
-  }
-
   it('transferPlayback PUTs /me/player with device_ids + play=false', async () => {
     seedTokens();
     fetchMock.route('PUT', '/v1/me/player', { status: 204, body: '' });
@@ -265,11 +263,6 @@ describe('transport calls', () => {
 // REAUTH_SENTINEL on 401 and on refresh failure, and translates upstream
 // noise into messages a wall-tablet user can act on.
 describe('api() retry / reauth / error translation', () => {
-  function seedTokens() {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 60_000 });
-  }
-
   it('retries once on 503 and returns the success payload', async () => {
     seedTokens();
     let n = 0;
@@ -340,8 +333,7 @@ describe('api() retry / reauth / error translation', () => {
   });
 
   it('throws SPOTIFY_REAUTH_REQUIRED when refresh itself fails', async () => {
-    const tokenPath = `${process.env.HOME}/.heos-controller/spotify-tokens.json`;
-    fakeFiles[tokenPath] = JSON.stringify({ access_token: 'old', refresh_token: 'r', expires_at: Date.now() - 1000 });
+    seedTokens({ access_token: 'old', expires_at: Date.now() - 1000 });
     fetchMock.route('POST', 'accounts.spotify.com/api/token', { status: 400, body: 'invalid_grant' });
     await expect(spotify.getDevices()).rejects.toThrow(/SPOTIFY_REAUTH_REQUIRED/);
   });
