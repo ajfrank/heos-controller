@@ -93,7 +93,11 @@ export default function QuickPicks({ recents = [], frequent = [], onPlay }) {
           {editing ? 'Done' : 'Edit'}
         </button>
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 no-scrollbar">
+      {/* mask-image fades the right edge so a phone-width viewport (where 8
+          tiles overflow ~700px) shows a clear hint that the row scrolls.
+          On iPad-width viewports all 8 fit and the soft fade reads as
+          intentional polish. Safari ≥15.4 supports unprefixed mask-image. */}
+      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 no-scrollbar [mask-image:linear-gradient(to_right,black_calc(100%-24px),transparent)]">
         <AnimatePresence initial={false}>
           {tiles.map(({ item, source }) => (
             <Tile
