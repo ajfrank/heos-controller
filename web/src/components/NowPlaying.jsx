@@ -27,26 +27,15 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
   const title = np.song || np.title || '';
   const artist = np.artist || np.station || '';
   const art = np.image_url || '';
-  // The reported play-state lags any tap by 1-2s (HEOS event) up to 5s
-  // (next Spotify poll). To keep the icon responsive, optimistically flip on
-  // press and reconcile when either source reports the new state.
+  // App-level playStateOverride patches playback.is_playing synchronously
+  // when the user taps play/pause, so by the time this component re-renders
+  // the icon already reflects the optimistic state — no local optimism
+  // needed. (See App.jsx control() + playbackForUI useMemo.)
   const stateStr = (np.state || '').toLowerCase();
   const heosPlaying = stateStr === 'play' || stateStr === 'playing';
-  const reportedPlaying = playback?.is_playing ?? heosPlaying;
-  const [optimistic, setOptimistic] = useState(null);
-  const isPlaying = optimistic ?? reportedPlaying;
-  // Clear the optimistic flag once the real state matches it (or after 4s as
-  // a safety net if neither source ever reports — e.g. Spotify session died).
-  useEffect(() => {
-    if (optimistic == null) return;
-    if (optimistic === reportedPlaying) { setOptimistic(null); return; }
-    const t = setTimeout(() => setOptimistic(null), 4000);
-    return () => clearTimeout(t);
-  }, [optimistic, reportedPlaying]);
+  const isPlaying = playback?.is_playing ?? heosPlaying;
   function togglePlay() {
-    const next = !isPlaying;
-    setOptimistic(next);
-    onControl(next ? 'play' : 'pause');
+    onControl(isPlaying ? 'pause' : 'play');
   }
   const interpolatedMs = useInterpolatedProgress(playback);
   // While the seek override is set, show the seeked position as the source of
@@ -55,11 +44,12 @@ export default function NowPlaying({ nowPlaying, onControl, masterVolume, onMast
   const durationMs = playback?.duration_ms ?? 0;
   const showBar = hasTrack && durationMs > 0;
 
-  // Shuffle/repeat optimism mirrors the play/pause pattern above. Spotify
-  // polls every 5s, so without this the icon stays in its old state for up
-  // to 5s after a tap — which reads as "did my tap register?". Reconcile when
-  // the next poll's reported value matches the optimistic one (or fall back
-  // after 6s if Spotify never confirms).
+  // Shuffle/repeat optimism. Spotify polls every 5s, so without this the
+  // icon stays in its old state for up to 5s after a tap — which reads as
+  // "did my tap register?". Reconcile when the next poll's reported value
+  // matches the optimistic one (or fall back after 6s if Spotify never
+  // confirms). Play/pause uses the App-level playStateOverride instead;
+  // shuffle/repeat don't have an App-level analogue so they stay local.
   const reportedShuffle = !!playback?.shuffle_state;
   const reportedRepeat = playback?.repeat_state || 'off';
   const [shuffleOpt, setShuffleOpt] = useState(null);

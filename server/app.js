@@ -457,18 +457,32 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
   // F3: progress proxy. Client polls every ~5s while a track is playing and
   // tab is visible; we just shuttle Spotify's /me/player. Returning 200 +
   // null when nothing is playing keeps the client's polling loop simple.
-  // Queue is fetched in parallel so the client can optimistically flip the
-  // Now Playing title/art the instant the user taps Next — without waiting
-  // the 500-1500ms Spotify propagation. Queue failures are swallowed so a
-  // non-Premium account or a transient queue-endpoint hiccup doesn't break
-  // the much more important playback poll.
+  //
+  // Queue is fetched alongside playback so the client can optimistically flip
+  // the Now Playing title/art the instant the user taps Next — without
+  // waiting the 500-1500ms Spotify propagation. Server-side cache (30s TTL,
+  // invalidated immediately when the playing track_id changes) keeps the
+  // queue fresh across N tablets without N× hitting /me/player/queue every
+  // 5s. Track-change invalidation means a skip / auto-advance always
+  // refreshes before the user could notice a stale queue[0]. Queue failures
+  // are swallowed so a non-Premium account or a transient hiccup doesn't
+  // break the much more important playback poll.
+  let cachedQueue = [];
+  let cachedQueueAt = 0;
+  let lastTrackId = null;
+  const QUEUE_CACHE_MS = 30_000;
   app.get('/api/playback/position', async (_req, res) => {
     try {
-      const [pb, queue] = await Promise.all([
-        spotify.getPlayback(),
-        spotify.getQueue?.().catch(() => []) ?? Promise.resolve([]),
-      ]);
-      res.json({ ok: true, playback: pb, queue: queue || [] });
+      const pb = await spotify.getPlayback();
+      const trackChanged = !!pb?.track_id && pb.track_id !== lastTrackId;
+      const stale = Date.now() - cachedQueueAt > QUEUE_CACHE_MS;
+      if (spotify.getQueue && (trackChanged || stale)) {
+        try { cachedQueue = (await spotify.getQueue()) || []; }
+        catch { /* keep prior cache; transient errors must not break the poll */ }
+        cachedQueueAt = Date.now();
+      }
+      if (pb?.track_id) lastTrackId = pb.track_id;
+      res.json({ ok: true, playback: pb, queue: cachedQueue });
     } catch (e) {
       sendErr(res, e);
     }

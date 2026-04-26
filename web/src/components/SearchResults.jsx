@@ -95,19 +95,32 @@ export default function SearchResults({ onPlay, onError }) {
 function ResultRow({ item, onPlay }) {
   const timer = useRef(null);
   const longFired = useRef(false);
+  // Tracked so the unmount cleanup below can cancel an in-flight confirmation
+  // — typing a new search query within 1.2s of pinning otherwise fires
+  // setPinned(false) on a dead component and React warns.
+  const pinFlashTimer = useRef(null);
   const [pinned, setPinned] = useState(false);
+
+  function flashPinned() {
+    setPinned(true);
+    clearTimeout(pinFlashTimer.current);
+    pinFlashTimer.current = setTimeout(() => setPinned(false), 1200);
+  }
 
   function start() {
     longFired.current = false;
     timer.current = setTimeout(() => {
       longFired.current = true;
       pinItem(item.play);
-      setPinned(true);
-      // Visual confirmation lasts a beat — the row stays selectable after.
-      setTimeout(() => setPinned(false), 1200);
+      flashPinned();
     }, 550);
   }
   function cancel() { clearTimeout(timer.current); }
+
+  useEffect(() => () => {
+    clearTimeout(timer.current);
+    clearTimeout(pinFlashTimer.current);
+  }, []);
 
   return (
     <Card
@@ -120,7 +133,7 @@ function ResultRow({ item, onPlay }) {
       onPointerUp={cancel}
       onPointerLeave={cancel}
       onPointerCancel={cancel}
-      onContextMenu={(e) => { e.preventDefault(); pinItem(item.play); setPinned(true); setTimeout(() => setPinned(false), 1200); }}
+      onContextMenu={(e) => { e.preventDefault(); pinItem(item.play); flashPinned(); }}
       radius="lg"
       shadow="none"
       classNames={{ base: 'w-full bg-transparent hover:bg-content2/60 active:bg-content2 transition-colors' }}

@@ -89,6 +89,74 @@ describe('GET /api/playback/position', () => {
     expect(res.status).toBe(401);
     expect(res.body).toMatchObject({ code: 'reauth' });
   });
+
+  // Server-side queue cache: the queue endpoint is hit once per track-change
+  // (or every 30s if the same track plays for a long time), not once per
+  // /api/playback/position poll. With multi-tablet polling every 5s this
+  // cuts upstream Spotify load by ~80%.
+  it('caches queue across polls of the same track_id', async () => {
+    const playback = { is_playing: true, progress_ms: 1, track_id: 'tk-A' };
+    const queue = [{ song: 'Up Next', artist: 'A', image_url: '', uri: 'spotify:track:n' }];
+    const { app, spotify } = buildTestApp({
+      spotify: {
+        getPlayback: vi.fn().mockResolvedValue(playback),
+        getQueue: vi.fn().mockResolvedValue(queue),
+      },
+    });
+    // Two back-to-back polls on the same track.
+    const r1 = await request(app).get('/api/playback/position');
+    const r2 = await request(app).get('/api/playback/position');
+    expect(r1.body.queue).toEqual(queue);
+    expect(r2.body.queue).toEqual(queue);
+    expect(spotify.getPlayback).toHaveBeenCalledTimes(2);
+    expect(spotify.getQueue).toHaveBeenCalledTimes(1); // cached on the second poll
+  });
+
+  it('refreshes queue cache when the playing track_id changes', async () => {
+    const queueA = [{ song: 'After A', artist: 'X', image_url: '', uri: 'spotify:track:after-a' }];
+    const queueB = [{ song: 'After B', artist: 'Y', image_url: '', uri: 'spotify:track:after-b' }];
+    let playbackTick = 0;
+    const { app, spotify } = buildTestApp({
+      spotify: {
+        getPlayback: vi.fn(async () => ({
+          is_playing: true,
+          progress_ms: 1,
+          track_id: ++playbackTick === 1 ? 'tk-A' : 'tk-B',
+        })),
+        getQueue: vi.fn()
+          .mockResolvedValueOnce(queueA)
+          .mockResolvedValueOnce(queueB),
+      },
+    });
+    const r1 = await request(app).get('/api/playback/position');
+    const r2 = await request(app).get('/api/playback/position');
+    expect(r1.body.queue).toEqual(queueA);
+    expect(r2.body.queue).toEqual(queueB);
+    expect(spotify.getQueue).toHaveBeenCalledTimes(2); // track-change invalidated the cache
+  });
+
+  it('keeps prior cached queue when a refresh attempt fails (transient error)', async () => {
+    const queueA = [{ song: 'After A', artist: 'X', image_url: '', uri: 'spotify:track:after-a' }];
+    let tick = 0;
+    const { app } = buildTestApp({
+      spotify: {
+        getPlayback: vi.fn(async () => ({
+          is_playing: true,
+          progress_ms: 1,
+          track_id: ++tick === 1 ? 'tk-A' : 'tk-B',
+        })),
+        getQueue: vi.fn()
+          .mockResolvedValueOnce(queueA)
+          .mockRejectedValueOnce(new Error('Spotify hiccup')),
+      },
+    });
+    const r1 = await request(app).get('/api/playback/position');
+    const r2 = await request(app).get('/api/playback/position');
+    expect(r1.body.queue).toEqual(queueA);
+    // Cache fall-back: the failed refresh leaves the prior queue in place
+    // rather than blanking it, so the optimistic-skip use case keeps working.
+    expect(r2.body.queue).toEqual(queueA);
+  });
 });
 
 describe('POST /api/playback/seek', () => {

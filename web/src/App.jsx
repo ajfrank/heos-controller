@@ -175,6 +175,9 @@ export default function App() {
   // Capture latest raw playback in a ref so control() can read it without
   // depending on closure freshness (taps can land between renders).
   const latestPlaybackRef = useRef(null);
+  // Track burst-poll setTimeout ids so the cleanup effect can cancel them
+  // if the component unmounts within 2.5s of a skip (HMR, page reload, etc).
+  const burstTimers = useRef([]);
 
   async function control(action) {
     const pb = latestPlaybackRef.current;
@@ -224,8 +227,10 @@ export default function App() {
         // track. Burst three: now (fast cases), 1.2s (typical), 2.5s (slow
         // path safety net before falling back to the natural 5s cadence).
         setPlayBumpToken((x) => x + 1);
-        setTimeout(() => setPlayBumpToken((x) => x + 1), 1200);
-        setTimeout(() => setPlayBumpToken((x) => x + 1), 2500);
+        burstTimers.current.push(
+          setTimeout(() => setPlayBumpToken((x) => x + 1), 1200),
+          setTimeout(() => setPlayBumpToken((x) => x + 1), 2500),
+        );
       }
     } catch (e) {
       // On failure, drop any optimistic override so the next poll shows truth.
@@ -353,6 +358,8 @@ export default function App() {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     for (const t of zoneFanoutTimers.current.values()) clearTimeout(t);
     zoneFanoutTimers.current.clear();
+    for (const id of burstTimers.current) clearTimeout(id);
+    burstTimers.current.length = 0;
   }, []);
 
   const showSpotifyBanner = !snap.spotifyConnected || reauthNeeded;
