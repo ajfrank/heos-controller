@@ -195,4 +195,52 @@ describe('HeosClient.applyGroup', () => {
     expect(client._doApplyGroup).toHaveBeenCalledTimes(2);
     expect(calls[1]).toEqual([1, 2, 3, 4]);
   });
+
+  // Repro: a HEOS query (group/get_groups) occasionally times out — speaker
+  // just woke from idle, mesh hiccup, etc. The typical pattern is "slow then
+  // recovered": the response DOES arrive, just after the 8s timeout window.
+  // The cancelled getGroups pending entry consumes that late frame in FIFO
+  // order; our fallthrough setGroup write then lands cleanly on the next
+  // pending slot. The diff check is an optimization, not a correctness
+  // requirement, so for multi-pid sets we proceed to setGroup blind rather
+  // than fail the user's tap with a raw "HEOS group/get_groups timed out".
+  it('falls through to set_group when getGroups times out (HEOS recovers and late response arrives)', async () => {
+    const { client, sock } = await connectedClient();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sock.onWrite((line) => {
+      if (line.includes('group/get_groups')) return null; // no immediate response → 8s timeout
+      if (line.includes('group/set_group?pid=1111,2222')) {
+        // HEOS has recovered: the late getGroups frame arrives in flight just
+        // before the setGroup response. The cancelled getGroups pending entry
+        // consumes the first frame (per the FIFO-with-skip design); the live
+        // setGroup entry consumes the second.
+        return [
+          '{"heos":{"command":"group/get_groups","result":"success","message":""},"payload":[]}\r\n',
+          FRAME.setGroup_success,
+        ];
+      }
+      return null;
+    });
+    const p = client.applyGroup([1111, 2222]);
+    await vi.advanceTimersByTimeAsync(8500); // past send()'s 8s timeout
+    await p;
+    expect(sock.written.some((w) => w.includes('group/set_group?pid=1111,2222'))).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  // Single-pid (solo) path — HEOS rejects setGroup with a not-currently-grouped
+  // pid (syserrno=-9 per quirk #2), so a getGroups failure means we genuinely
+  // can't tell whether the action is needed. Silent no-op is the least-harm
+  // outcome; the user's next tap (after HEOS recovers) will succeed.
+  it('no-ops on single-pid request when getGroups times out', async () => {
+    const { client, sock } = await connectedClient();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sock.onWrite(() => null); // simulate no response to anything
+    const p = client.applyGroup([1111]);
+    await vi.advanceTimersByTimeAsync(8500);
+    await p;
+    expect(sock.written.some((w) => w.includes('group/set_group'))).toBe(false);
+    warnSpy.mockRestore();
+  });
 });

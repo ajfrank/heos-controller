@@ -88,7 +88,12 @@ export default function App() {
       await api.setActive(zones);
     } catch (e) {
       setSnap((cur) => ({ ...cur, activeZones: prior }));
-      showBanner(e.message, "Couldn't update zones");
+      // Raw "HEOS X timed out" is technical and unactionable. Translate to
+      // something the wife can do something with (try again).
+      const msg = /timed out/i.test(e.message)
+        ? 'Speakers are slow to respond — please try again.'
+        : e.message;
+      showBanner(msg, "Couldn't update zones");
     }
   }
 

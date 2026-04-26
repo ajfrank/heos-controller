@@ -375,7 +375,31 @@ class HeosClient extends EventEmitter {
   /** Idempotent group apply — no-op when current state already matches. @param {string[]} pids */
   async _doApplyGroup(pids) {
     if (!pids.length) return;
-    const groups = await this.getGroups();
+    // The diff check is an optimization, not a correctness requirement. If
+    // getGroups times out (HEOS just woken from idle, transient mesh hiccup),
+    // we'd rather proceed and let setGroup do its thing than fail the user's
+    // tap with "HEOS group/get_groups timed out". For multi-pid sets HEOS
+    // accepts the command blind; for single-pid (solo) sets we have to no-op
+    // because HEOS rejects setGroup with a pid that isn't currently grouped
+    // (syserrno=-9 — see HEOS quirk #2). The user's worst case here is that
+    // a "go solo" tap during HEOS slowness silently does nothing; the next
+    // tap (after HEOS recovers) will succeed.
+    //
+    // Caveat: if the connection is TRULY wedged (no late response ever
+    // arrives), the cancelled getGroups pending entry will consume our
+    // setGroup response (FIFO-with-skip per heos-protocol.test.js:166-190)
+    // and setGroup will time out too — surfacing a different but still-ugly
+    // error 16s after the tap. The TCP keepalive (30s) eventually closes
+    // the wedged socket, fast-failing both pending entries via the close
+    // handler. In practice the recovery case is far more common.
+    let groups;
+    try {
+      groups = await this.getGroups();
+    } catch (e) {
+      console.warn(`[heos] _doApplyGroup: getGroups failed (${e.message}), proceeding without diff check`);
+      if (pids.length === 1) return;
+      return this.setGroup(pids);
+    }
     const idStr = (x) => String(x);
     const desired = new Set(pids.map(idStr));
 
