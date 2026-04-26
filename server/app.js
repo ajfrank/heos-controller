@@ -154,6 +154,15 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     res.status(heosReady ? 200 : 503).json(body);
   });
 
+  // Route-level coalescer for zone toggles. Without this, rapid taps each
+  // serialize through groupChain and pay the full applyGroup cost (up to ~5s
+  // with EID13 retries) for intermediate selections the user already abandoned.
+  // While a setActive is in flight, additional POSTs collapse to a single
+  // pending batch — the latest desired zones win, and ALL coalesced responses
+  // receive the same final result. Mirrors heos.js applyGroup's pattern but
+  // at the route level so the chain isn't blocked by stale work.
+  let zonesInflight = null;
+  let zonesPending = null; // { zones, responses: [res, ...] }
   app.post('/api/zones/active', async (req, res) => {
     const { zones } = req.body;
     if (!Array.isArray(zones)) {
@@ -164,23 +173,40 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     if (unknown.length) {
       return res.status(400).json({ error: `unknown zone(s): ${unknown.join(', ')}` });
     }
-    await serializeGroupOp(async () => {
-      // Snapshot prior selection BEFORE optimistic update so we can roll back
-      // if HEOS rejects the regroup. Without this, the client rolls back its
-      // own optimistic toggle but the server keeps the new selection — the next
-      // /api/play then acts on zones the user already abandoned.
-      const prior = state.activeZones.slice();
-      state.setActiveZones(zones);
-      try {
-        // Empty selection = best-effort no-op (don't issue an empty set_group).
-        const pids = state.activePids;
-        if (pids.length) await getH().applyGroup(pids);
-        res.json({ ok: true });
-      } catch (e) {
-        state.setActiveZones(prior);
-        res.status(500).json({ error: e.message });
+    if (zonesInflight) {
+      // Drop into the pending batch — replace zones with the latest desired
+      // (intermediate taps are stale by definition), attach this response.
+      if (zonesPending) {
+        zonesPending.zones = zones;
+        zonesPending.responses.push(res);
+      } else {
+        zonesPending = { zones, responses: [res] };
       }
-    });
+      return;
+    }
+    zonesInflight = (async () => {
+      let cur = { zones, responses: [res] };
+      while (cur) {
+        // Run inside serializeGroupOp so this iteration is mutually exclusive
+        // with any in-flight /api/play or /api/stop-all on the same chain.
+        await serializeGroupOp(async () => {
+          const prior = state.activeZones.slice();
+          state.setActiveZones(cur.zones);
+          try {
+            const pids = state.activePids;
+            if (pids.length) await getH().applyGroup(pids);
+            for (const r of cur.responses) r.json({ ok: true });
+          } catch (e) {
+            state.setActiveZones(prior);
+            for (const r of cur.responses) r.status(500).json({ error: e.message });
+          }
+        });
+        cur = zonesPending;
+        zonesPending = null;
+      }
+      zonesInflight = null;
+    })();
+    await zonesInflight;
   });
 
   app.get('/api/search', async (req, res) => {

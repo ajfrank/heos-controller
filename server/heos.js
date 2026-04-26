@@ -438,21 +438,47 @@ class HeosClient extends EventEmitter {
         return this.setGroup(pids);
       }
       // eid=13 = "Processing previous command", eid=11 = "System busy" — both
-      // are transient busy signals. Typical busy window is <1s but can stretch
-      // to 3-4s when HEOS is mid-Spotify-Connect-wake or reforming a multi-zone
-      // group. One 800ms retry left users seeing the busy banner for legitimate
-      // transient cases; three retries with growing delays (cumulative ~5.2s)
-      // cover ~all real-world windows before giving up.
+      // are transient busy signals. The dominant real-world cause is HEOS's
+      // internal Spotify Connect daemon busy with a track auto-advance or
+      // active stream — pure delay-and-retry doesn't help because the daemon
+      // stays busy. The official HEOS app sidesteps this by pausing the
+      // leader before regrouping, then resuming. We do the same on the
+      // first retry: snapshot play state, pause if playing, regroup, resume.
+      // Pause/resume are best-effort; failures don't block the regroup.
+      // If the first pause+retry still fails, fall back to plain delays
+      // (covers the rare case where pause itself errors out).
       if (e.code === 'EID13' || e.code === 'EID11') {
+        const leader = pids[0];
+        let wasPlaying = false;
+        try {
+          const ps = await this.getPlayState(leader);
+          wasPlaying = ps === 'play' || ps === 'playing';
+          if (wasPlaying) {
+            try { await this.setPlayState(leader, 'pause'); }
+            catch (pe) { console.warn('[heos] _doApplyGroup: pre-regroup pause failed:', pe.message); }
+          }
+        } catch (pse) {
+          console.warn('[heos] _doApplyGroup: getPlayState failed:', pse.message);
+        }
         let lastErr = e;
         for (const delay of [800, 1600, 2800]) {
           await new Promise((r) => setTimeout(r, delay));
           try {
-            return await this.setGroup(pids);
+            const result = await this.setGroup(pids);
+            if (wasPlaying) {
+              try { await this.setPlayState(leader, 'play'); }
+              catch (re) { console.warn('[heos] _doApplyGroup: post-regroup resume failed:', re.message); }
+            }
+            return result;
           } catch (e2) {
             if (e2.code !== 'EID13' && e2.code !== 'EID11') throw e2;
             lastErr = e2;
           }
+        }
+        // All retries exhausted. If we paused, try to resume so we don't
+        // leave the user staring at a paused speaker on top of the error.
+        if (wasPlaying) {
+          try { await this.setPlayState(leader, 'play'); } catch { /* best-effort */ }
         }
         throw lastErr;
       }

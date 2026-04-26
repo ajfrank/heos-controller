@@ -49,7 +49,14 @@ export default function App() {
   }
 
   function showBanner(text, title) {
-    setBanner({ text, title, id: Date.now() });
+    setBanner((cur) => {
+      // Suppress an exact-duplicate banner so a flurry of identical errors
+      // (e.g. several rapid setActive 500s) doesn't flash the banner over
+      // and over and re-trigger animation. The fresh id would otherwise
+      // remount the AnimatePresence child each time.
+      if (cur && cur.text === text && cur.title === title) return cur;
+      return { text, title, id: Date.now() };
+    });
   }
 
   useEffect(() => {

@@ -143,6 +143,26 @@ describe('HeosClient.applyGroup', () => {
     expect(sock.written.some((w) => w.includes('group/set_group?pid=1111,2222,3333'))).toBe(true);
   });
 
+  // Build a command-name-aware onWrite handler so tests don't break when the
+  // sequence injects extra reads (e.g. the get_play_state pause-regroup-resume
+  // path). `setGroupResponses` is consumed in order on each set_group write.
+  function eid13TestHandler({ playState = 'play', setGroupResponses = [] } = {}) {
+    let setGroupIdx = 0;
+    const pausedFrame = JSON.stringify({
+      heos: { command: 'player/get_play_state', result: 'success', message: `pid=1111&state=${playState}` },
+    }) + '\r\n';
+    return (line) => {
+      if (line.includes('group/get_groups')) return FRAME.getGroups_kitchenLR;
+      if (line.includes('player/get_play_state')) return pausedFrame;
+      if (line.includes('player/set_play_state')) return FRAME.setPlayState_success;
+      if (line.includes('group/set_group?pid=1111,2222,3333')) {
+        const i = setGroupIdx++;
+        return setGroupResponses[i] ?? FRAME.setGroup_success;
+      }
+      return null;
+    };
+  }
+
   it('retries set_group on eid=13 (HEOS busy with internal state change)', async () => {
     // Repro: user starts a song in one zone (Spotify Connect wakes the
     // speaker; HEOS fires its own internal commands), then immediately
@@ -150,13 +170,10 @@ describe('HeosClient.applyGroup', () => {
     // processing the wake fallout and gets eid=13. _doApplyGroup must
     // sleep briefly and retry so the user never sees the error.
     const { client, sock } = await connectedClient();
-    let call = 0;
-    sock.onWrite(() => {
-      const i = call++;
-      if (i === 0) return FRAME.getGroups_kitchenLR;
-      if (i === 1) return FRAME.setGroup_eid13;
-      return FRAME.setGroup_success;
-    });
+    sock.onWrite(eid13TestHandler({
+      playState: 'pause', // skip pause/resume side path; just verify retry counting
+      setGroupResponses: [FRAME.setGroup_eid13, FRAME.setGroup_success],
+    }));
     const p = client.applyGroup([1111, 2222, 3333]);
     await vi.advanceTimersByTimeAsync(900);
     await p;
@@ -169,14 +186,12 @@ describe('HeosClient.applyGroup', () => {
   // three times with growing delays (800 → 1600 → 2800ms, cumulative ~5.2s).
   it('retries set_group up to three times on persistent eid=13', async () => {
     const { client, sock } = await connectedClient();
-    let call = 0;
-    sock.onWrite(() => {
-      const i = call++;
-      if (i === 0) return FRAME.getGroups_kitchenLR;
-      // First three set_group attempts return EID13; fourth succeeds.
-      if (i <= 3) return FRAME.setGroup_eid13;
-      return FRAME.setGroup_success;
-    });
+    sock.onWrite(eid13TestHandler({
+      playState: 'pause',
+      setGroupResponses: [
+        FRAME.setGroup_eid13, FRAME.setGroup_eid13, FRAME.setGroup_eid13, FRAME.setGroup_success,
+      ],
+    }));
     const p = client.applyGroup([1111, 2222, 3333]);
     // Cumulative delays: 800 + 1600 + 2800 = 5200ms.
     await vi.advanceTimersByTimeAsync(5300);
@@ -189,18 +204,93 @@ describe('HeosClient.applyGroup', () => {
   // try forever. The user can retry manually if HEOS is genuinely stuck.
   it('surfaces eid=13 to the caller after all retries are exhausted', async () => {
     const { client, sock } = await connectedClient();
-    let call = 0;
-    sock.onWrite(() => {
-      const i = call++;
-      if (i === 0) return FRAME.getGroups_kitchenLR;
-      return FRAME.setGroup_eid13; // every attempt fails
-    });
+    sock.onWrite(eid13TestHandler({
+      playState: 'pause',
+      // Repeat eid13 indefinitely — the handler defaults to FRAME.setGroup_success
+      // for any index past the array, so cap at 4 fail responses to be sure.
+      setGroupResponses: [
+        FRAME.setGroup_eid13, FRAME.setGroup_eid13, FRAME.setGroup_eid13, FRAME.setGroup_eid13,
+      ],
+    }));
     const p = client.applyGroup([1111, 2222, 3333]);
     const expectation = expect(p).rejects.toThrow(/busy/i);
     await vi.advanceTimersByTimeAsync(5300);
     await expectation;
     const setCalls = sock.written.filter((w) => w.includes('group/set_group?pid=1111,2222,3333'));
     expect(setCalls.length).toBe(4); // initial + 3 retries, all rejected
+  });
+
+  // The actual user complaint: zone toggles during active playback hit EID13
+  // because HEOS is busy with the Spotify Connect daemon. Sidestep this by
+  // pausing the leader before regrouping, then resuming — same trick the
+  // official HEOS app uses.
+  it('on EID13, pauses leader → retries setGroup → resumes leader (active playback path)', async () => {
+    const { client, sock } = await connectedClient();
+    sock.onWrite(eid13TestHandler({
+      playState: 'play',
+      setGroupResponses: [FRAME.setGroup_eid13, FRAME.setGroup_success],
+    }));
+    const p = client.applyGroup([1111, 2222, 3333]);
+    await vi.advanceTimersByTimeAsync(900);
+    await p;
+
+    // The full sequence on the wire.
+    const order = sock.written
+      .map((w) => w.match(/heos:\/\/([^?\s]+)(\?[^\s]+)?/))
+      .filter(Boolean)
+      .map((m) => `${m[1]}${m[2] ? '?' + m[2].slice(1, 60) : ''}`);
+
+    // Find the indices of each step.
+    const idx = (substr) => order.findIndex((s) => s.includes(substr));
+    const lastIdx = (substr) => order.length - 1 - [...order].reverse().findIndex((s) => s.includes(substr));
+
+    expect(idx('group/get_groups')).toBeGreaterThanOrEqual(0);
+    expect(idx('player/get_play_state')).toBeGreaterThan(idx('group/set_group'));
+    expect(idx('player/set_play_state?pid=1111&state=pause')).toBeGreaterThan(idx('player/get_play_state'));
+    expect(lastIdx('group/set_group')).toBeGreaterThan(idx('player/set_play_state?pid=1111&state=pause'));
+    expect(idx('player/set_play_state?pid=1111&state=play')).toBeGreaterThan(lastIdx('group/set_group'));
+  });
+
+  // Skip pause/resume when the leader is already paused — no point thrashing
+  // the play state on a speaker that wasn't producing audio anyway.
+  it('on EID13, skips pause/resume when leader is not currently playing', async () => {
+    const { client, sock } = await connectedClient();
+    sock.onWrite(eid13TestHandler({
+      playState: 'pause',
+      setGroupResponses: [FRAME.setGroup_eid13, FRAME.setGroup_success],
+    }));
+    const p = client.applyGroup([1111, 2222, 3333]);
+    await vi.advanceTimersByTimeAsync(900);
+    await p;
+    expect(sock.written.some((w) => w.includes('player/set_play_state'))).toBe(false);
+  });
+
+  // Pause is best-effort: if it fails (eid=12, transient mesh issue, etc.) we
+  // still attempt the regroup retry so the user's tap isn't completely lost.
+  it('on EID13, proceeds with regroup even if pre-regroup pause fails', async () => {
+    const { client, sock } = await connectedClient();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let setGroupCount = 0;
+    sock.onWrite((line) => {
+      if (line.includes('group/get_groups')) return FRAME.getGroups_kitchenLR;
+      if (line.includes('player/get_play_state')) return FRAME.getPlayState_play;
+      if (line.includes('player/set_play_state?pid=1111&state=pause')) {
+        return JSON.stringify({
+          heos: { command: 'player/set_play_state', result: 'fail', message: 'eid=12&text=System error' },
+        }) + '\r\n';
+      }
+      if (line.includes('player/set_play_state?pid=1111&state=play')) return FRAME.setPlayState_success;
+      if (line.includes('group/set_group?pid=1111,2222,3333')) {
+        setGroupCount++;
+        return setGroupCount === 1 ? FRAME.setGroup_eid13 : FRAME.setGroup_success;
+      }
+      return null;
+    });
+    const p = client.applyGroup([1111, 2222, 3333]);
+    await vi.advanceTimersByTimeAsync(900);
+    await p;
+    expect(setGroupCount).toBe(2); // retry happened despite pause failure
+    warnSpy.mockRestore();
   });
 
   it('coalesces concurrent applyGroup calls — only the latest pids run after the in-flight one finishes', async () => {

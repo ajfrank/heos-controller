@@ -98,6 +98,94 @@ describe('POST /api/zones/active', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Ghost/);
   });
+
+  // Route-level coalescer: rapid taps during EID13 retry storms used to stack
+  // 5+ second waits per tap (each running a full applyGroup serially). Now
+  // intermediate taps drop server-side; only the latest desired zones reach
+  // applyGroup. All coalesced clients still receive a response with the
+  // final outcome.
+  it('coalesces rapid POSTs — only the latest desired zones reach applyGroup', async () => {
+    // Signaling pattern: applyGroup pings `firstApplyPending` so the test
+    // knows the handler reached the apply step (avoids timing-fragile
+    // setImmediate waits).
+    let signalFirstApply, resolveFirstApply;
+    const firstApplyEntered = new Promise((r) => { signalFirstApply = r; });
+    const applyGroup = vi.fn()
+      .mockImplementationOnce(() => {
+        signalFirstApply();
+        return new Promise((r) => { resolveFirstApply = r; });
+      })
+      .mockResolvedValue(undefined);
+    const { app, state } = buildTestApp({ heos: { applyGroup } });
+    state.setPlayers([
+      { pid: '1', name: 'A' }, { pid: '2', name: 'B' }, { pid: '3', name: 'C' },
+    ]);
+    state.setZones([
+      { name: 'A', pids: ['1'] },
+      { name: 'B', pids: ['2'] },
+      { name: 'C', pids: ['3'] },
+    ]);
+
+    // First POST: enters the IIFE, calls applyGroup which we hold open.
+    // .then(r => r) triggers supertest's underlying send (the request isn't
+    // dispatched until `.then`/`.end`/await is called) and yields a regular
+    // Promise we can race against firstApplyEntered without blocking.
+    const p1 = request(app).post('/api/zones/active').send({ zones: ['A'] }).then((r) => r);
+    await firstApplyEntered;
+    expect(applyGroup).toHaveBeenCalledTimes(1);
+    expect(applyGroup).toHaveBeenLastCalledWith(['1']);
+
+    // Two more POSTs while the first is in-flight — they should coalesce
+    // into a single pending batch with the LATEST desired zones. Wait long
+    // enough for both to land on the server's coalescer branch.
+    const p2 = request(app).post('/api/zones/active').send({ zones: ['A', 'B'] }).then((r) => r);
+    const p3 = request(app).post('/api/zones/active').send({ zones: ['B', 'C'] }).then((r) => r);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Release the first apply.
+    resolveFirstApply();
+
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    expect(r3.status).toBe(200);
+
+    // applyGroup ran twice: once for the first POST, once for the
+    // coalesced batch (with the LATEST desired zones — p2 was dropped).
+    expect(applyGroup).toHaveBeenCalledTimes(2);
+    expect(applyGroup).toHaveBeenLastCalledWith(['2', '3']);
+    expect(state.activeZones).toEqual(['B', 'C']);
+  });
+
+  // When the in-flight call FAILS, the pending batch still runs — the user's
+  // latest intent shouldn't be silently dropped just because an earlier
+  // attempt errored out.
+  it('runs the coalesced batch even when the in-flight call fails', async () => {
+    let signalFirstApply, rejectFirstApply;
+    const firstApplyEntered = new Promise((r) => { signalFirstApply = r; });
+    const applyGroup = vi.fn()
+      .mockImplementationOnce(() => {
+        signalFirstApply();
+        return new Promise((_res, rej) => { rejectFirstApply = rej; });
+      })
+      .mockResolvedValue(undefined);
+    const { app, state } = buildTestApp({ heos: { applyGroup } });
+    state.setPlayers([{ pid: '1', name: 'A' }, { pid: '2', name: 'B' }]);
+    state.setZones([{ name: 'A', pids: ['1'] }, { name: 'B', pids: ['2'] }]);
+
+    const p1 = request(app).post('/api/zones/active').send({ zones: ['A'] }).then((r) => r);
+    await firstApplyEntered;
+    const p2 = request(app).post('/api/zones/active').send({ zones: ['B'] }).then((r) => r);
+    await new Promise((r) => setTimeout(r, 50));
+
+    rejectFirstApply(new Error('HEOS busy'));
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1.status).toBe(500);
+    expect(r2.status).toBe(200);
+    expect(applyGroup).toHaveBeenCalledTimes(2);
+    expect(state.activeZones).toEqual(['B']);
+  });
 });
 
 describe('GET /api/search', () => {
