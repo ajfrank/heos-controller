@@ -157,8 +157,60 @@ export default function App() {
     }
   }
 
+  // Optimistic playback override for the time bar. The Spotify poll is on a 5s
+  // cadence, so without this the bar waits up to 5s after a play/pause tap
+  // before it starts/stops ticking — visibly long after the audio reacts.
+  // Pause case: freeze progress_ms at the currently-displayed effective time
+  // (raw sample's progress + elapsed since sampledAt) so the bar stops where
+  // it shows instead of snapping back to the last sample's position. Play
+  // case: stamp sampledAt=now so the interpolator ticks forward from the
+  // current displayed position. The override is reconciled (cleared) when
+  // the next authoritative poll's is_playing matches, or after a 4s safety.
+  const [playStateOverride, setPlayStateOverride] = useState(null);
+  // Capture latest raw playback in a ref so control() can read it without
+  // depending on closure freshness (taps can land between renders).
+  const latestPlaybackRef = useRef(null);
+
   async function control(action) {
-    try { await api.control(action); } catch (e) { showToast(e.message, 'error'); }
+    const pb = latestPlaybackRef.current;
+    if (action === 'play' || action === 'pause') {
+      const next = action === 'play';
+      const elapsed = pb?.is_playing ? Date.now() - (pb.sampledAt || Date.now()) : 0;
+      const currentMs = Math.max(0, Math.min(pb?.duration_ms || 0, (pb?.progress_ms || 0) + elapsed));
+      setPlayStateOverride({ kind: 'pp', is_playing: next, progress_ms: currentMs, sampledAt: Date.now() });
+    } else if (action === 'next' || action === 'previous') {
+      // Reset the visible bar to 0 so it reads as "new track playing from
+      // start" instead of marching forward on the old track's position. Tag
+      // with the song-at-tap-time so reconcile can tell when Spotify reports
+      // the actual new track (vs. catching the OLD track on a fast immediate
+      // poll, which would otherwise un-stick the override prematurely).
+      setPlayStateOverride({
+        kind: 'skip',
+        is_playing: pb?.is_playing ?? true,
+        progress_ms: 0,
+        sampledAt: Date.now(),
+        prevSong: latestPlaybackSongRef.current,
+      });
+    }
+    try {
+      await api.control(action);
+      if (action === 'play' || action === 'pause') {
+        // ~500ms (network + Spotify API) for the override to resolve.
+        setPlayBumpToken((x) => x + 1);
+      } else if (action === 'next' || action === 'previous') {
+        // HEOS → speaker's Spotify Connect daemon → Spotify takes ~500-1500ms
+        // to propagate a skip. An immediate poll alone often catches the OLD
+        // track. Burst three: now (fast cases), 1.2s (typical), 2.5s (slow
+        // path safety net before falling back to the natural 5s cadence).
+        setPlayBumpToken((x) => x + 1);
+        setTimeout(() => setPlayBumpToken((x) => x + 1), 1200);
+        setTimeout(() => setPlayBumpToken((x) => x + 1), 2500);
+      }
+    } catch (e) {
+      // On failure, drop any optimistic override so the next poll shows truth.
+      setPlayStateOverride(null);
+      showToast(e.message, 'error');
+    }
   }
 
   async function setZoneVolume(zoneName, level) {
@@ -302,6 +354,51 @@ export default function App() {
   // it synchronously as the "stale" watermark for the optimistic overlay.
   const latestPlaybackSongRef = useRef('');
   useEffect(() => { latestPlaybackSongRef.current = playback?.song || ''; }, [playback?.song]);
+  // Mirror the full sample so control() can compute the optimistic freeze
+  // position synchronously without re-rendering.
+  useEffect(() => { latestPlaybackRef.current = playback || null; }, [playback]);
+
+  // Reconcile the play-state override with the authoritative poll. Two modes:
+  //   - 'pp' (play/pause): clear when polled is_playing matches.
+  //   - 'skip' (next/previous): clear when polled.song != song-at-tap-time.
+  //     Matching on is_playing here would mis-fire on a fast immediate poll
+  //     that catches the OLD track (still playing, same is_playing value) —
+  //     the bar would snap to the old position before the new track arrives.
+  // 4s safety net for either mode so a stranded override (Spotify session
+  // moved, refresh failed, skip-to-same-song) can't freeze the bar permanently.
+  useEffect(() => {
+    if (!playStateOverride) return;
+    if (playStateOverride.kind === 'skip') {
+      if (playback?.song && playback.song !== playStateOverride.prevSong) {
+        setPlayStateOverride(null);
+        return;
+      }
+    } else {
+      if (playback?.is_playing === playStateOverride.is_playing) {
+        setPlayStateOverride(null);
+        return;
+      }
+    }
+    const t = setTimeout(() => setPlayStateOverride(null), 4000);
+    return () => clearTimeout(t);
+  }, [playStateOverride, playback?.is_playing, playback?.song]);
+
+  // Compose what NowPlaying renders: the polled sample with the optimistic
+  // is_playing + progress_ms patched in while the override is active. Other
+  // metadata (song, art, duration, device_id, shuffle/repeat) flows through
+  // unchanged — they're not what the override is fixing. Effects that need the
+  // raw sample (foreign-device detect, seek catch-up, latest-song-ref) still
+  // read `playback` directly.
+  const playbackForUI = useMemo(() => {
+    if (!playStateOverride) return playback;
+    if (!playback) return null;
+    return {
+      ...playback,
+      is_playing: playStateOverride.is_playing,
+      progress_ms: playStateOverride.progress_ms,
+      sampledAt: playStateOverride.sampledAt,
+    };
+  }, [playback, playStateOverride]);
 
   // First-load convenience: if HEOS reports zones already have a track queued
   // (play or paused) but no zone is selected in the UI, auto-select them so
@@ -561,7 +658,7 @@ export default function App() {
               masterVolume={masterDisplay}
               onMasterVolume={setMasterVolume}
               onMasterVolumeEnd={endMasterDrag}
-              playback={playback}
+              playback={playbackForUI}
               onSeek={seekTo}
               seekOverride={seekOverride}
             />
