@@ -63,12 +63,24 @@ export default function QuickPicks({ recents = [], frequent = [], onPlay }) {
   const frequentUris = new Set(frequentTiles.map((f) => f.uri));
   const recentTiles = recents.filter((r) => !pinUris.has(r.uri) && !frequentUris.has(r.uri));
 
+  // Single-row layout: pinned first (most intentional), then often (auto-
+  // derived from frequency), then recents (most recent activity). Capped at 8
+  // tiles to keep one horizontal strip; overflow scrolls. The pin dot
+  // indicator on each tile preserves the visual distinction between sources
+  // without needing per-section labels.
+  const ROW_CAP = 8;
+  const tiles = [
+    ...pins.map((it) => ({ item: it, source: 'pin' })),
+    ...frequentTiles.map((it) => ({ item: it, source: 'often' })),
+    ...recentTiles.map((it) => ({ item: it, source: 'recent' })),
+  ].slice(0, ROW_CAP);
+
   // Auto-exit edit mode when there's nothing left to edit.
   useEffect(() => {
-    if (editing && pins.length === 0 && recentTiles.length === 0 && frequentTiles.length === 0) setEditing(false);
-  }, [editing, pins.length, recentTiles.length, frequentTiles.length]);
+    if (editing && tiles.length === 0) setEditing(false);
+  }, [editing, tiles.length]);
 
-  if (!pins.length && !recentTiles.length && !frequentTiles.length) return null;
+  if (tiles.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-2">
@@ -81,67 +93,26 @@ export default function QuickPicks({ recents = [], frequent = [], onPlay }) {
           {editing ? 'Done' : 'Edit'}
         </button>
       </div>
-      {pins.length > 0 && (
-        <Row label="Pinned">
-          {pins.map((item) => (
-            <Tile
-              key={`pin-${item.uri}`}
-              item={item}
-              isPinned
-              editing={editing}
-              onPlay={onPlay}
-              onLongPress={() => unpin(item.uri)}
-              onRemove={() => unpin(item.uri)}
-            />
-          ))}
-        </Row>
-      )}
-      {frequentTiles.length > 0 && (
-        <Row label="Often">
-          {frequentTiles.map((item) => (
-            <Tile
-              key={`often-${item.uri}`}
-              item={item}
-              editing={editing}
-              onPlay={onPlay}
-              // Long-press on an Often tile pins it permanently — natural
-              // promotion gesture matching the existing Recents behavior.
-              onLongPress={() => pinItem(item)}
-              // Remove gesture is suppressed for Often — there's no per-item
-              // remove (the row is auto-derived). The × is hidden via the
-              // null onRemove handler check inside Tile.
-              onRemove={null}
-            />
-          ))}
-        </Row>
-      )}
-      {recentTiles.length > 0 && (
-        <Row>
-          {recentTiles.map((item) => (
-            <Tile
-              key={`recent-${item.uri}`}
-              item={item}
-              editing={editing}
-              onPlay={onPlay}
-              onLongPress={() => pinItem(item)}
-              onRemove={() => removeRecent(item.uri)}
-            />
-          ))}
-        </Row>
-      )}
-    </div>
-  );
-}
-
-function Row({ label, children }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      {label && (
-        <p className="text-tiny uppercase tracking-[0.1em] text-white/50 font-semibold ml-1">{label}</p>
-      )}
       <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 no-scrollbar">
         <AnimatePresence initial={false}>
-          {children}
+          {tiles.map(({ item, source }) => (
+            <Tile
+              key={`${source}-${item.uri}`}
+              item={item}
+              isPinned={source === 'pin'}
+              editing={editing}
+              onPlay={onPlay}
+              // Pinned: long-press unpins. Often/Recent: long-press pins.
+              onLongPress={() => (source === 'pin' ? unpin(item.uri) : pinItem(item))}
+              // × in edit mode: unpin (pin), removeRecent (recent), suppressed
+              // for Often (auto-derived — no per-item remove).
+              onRemove={
+                source === 'pin' ? () => unpin(item.uri)
+                : source === 'recent' ? () => removeRecent(item.uri)
+                : null
+              }
+            />
+          ))}
         </AnimatePresence>
       </div>
     </div>
