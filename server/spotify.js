@@ -379,6 +379,26 @@ export async function getMyPlaylists() {
 }
 
 /**
+ * Up-next queue. The frontend uses queue[0] to optimistically swap the Now
+ * Playing title/art the instant the user taps Next, instead of waiting the
+ * 500-1500ms it takes Spotify to propagate a Connect-relayed skip.
+ * Trimmed to {song, artist, image_url, uri} per item and capped at 5 — we
+ * only need queue[0] today, but a small lookahead is cheap and lets a
+ * double-tap still hit a known title.
+ * @returns {Promise<Array<{song:string,artist:string,image_url:string,uri:string}>>}
+ */
+export async function getQueue() {
+  const r = await api('/me/player/queue');
+  const items = r?.queue || [];
+  return items.slice(0, 5).map((it) => ({
+    song: it?.name || '',
+    artist: (it?.artists || []).map((a) => a?.name).filter(Boolean).join(', '),
+    image_url: it?.album?.images?.[0]?.url || '',
+    uri: it?.uri || '',
+  }));
+}
+
+/**
  * Look up a single track. Used by /api/play to resolve a track's parent album,
  * so we can play the track inside its album context (offset = track URI). That
  * lets Spotify's account-level Autoplay extend with similar songs after the

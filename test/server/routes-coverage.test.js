@@ -45,20 +45,40 @@ describe('POST /api/recents/remove', () => {
 });
 
 describe('GET /api/playback/position', () => {
-  it('returns the current playback object on success', async () => {
+  it('returns the current playback object + queue on success', async () => {
     const playback = { is_playing: true, progress_ms: 12345, item: { id: 'x' } };
-    const { app, spotify } = buildTestApp({ spotify: { getPlayback: vi.fn().mockResolvedValue(playback) } });
+    const queue = [{ song: 'Up Next', artist: 'A', image_url: '', uri: 'spotify:track:n' }];
+    const { app, spotify } = buildTestApp({
+      spotify: {
+        getPlayback: vi.fn().mockResolvedValue(playback),
+        getQueue: vi.fn().mockResolvedValue(queue),
+      },
+    });
     const res = await request(app).get('/api/playback/position');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true, playback });
+    expect(res.body).toEqual({ ok: true, playback, queue });
     expect(spotify.getPlayback).toHaveBeenCalled();
+    expect(spotify.getQueue).toHaveBeenCalled();
   });
 
-  it('returns playback: null when nothing is playing (Spotify returns null)', async () => {
+  it('returns playback: null + queue: [] when nothing is playing', async () => {
     const { app } = buildTestApp({ spotify: { getPlayback: vi.fn().mockResolvedValue(null) } });
     const res = await request(app).get('/api/playback/position');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true, playback: null });
+    expect(res.body).toEqual({ ok: true, playback: null, queue: [] });
+  });
+
+  it('swallows getQueue errors so a flaky queue endpoint never breaks the playback poll', async () => {
+    const playback = { is_playing: true, progress_ms: 1, item: { id: 'x' } };
+    const { app } = buildTestApp({
+      spotify: {
+        getPlayback: vi.fn().mockResolvedValue(playback),
+        getQueue: vi.fn().mockRejectedValue(new Error('Spotify hiccup')),
+      },
+    });
+    const res = await request(app).get('/api/playback/position');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, playback, queue: [] });
   });
 
   it('translates SPOTIFY_REAUTH_REQUIRED → 401 + code:"reauth"', async () => {

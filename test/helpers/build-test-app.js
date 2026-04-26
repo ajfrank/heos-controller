@@ -31,6 +31,7 @@ export function buildTestApp(overrides = {}) {
     transferPlayback: vi.fn().mockResolvedValue(undefined),
     play: vi.fn().mockResolvedValue(undefined),
     getPlayback: vi.fn().mockResolvedValue(null),
+    getQueue: vi.fn().mockResolvedValue([]),
     seek: vi.fn().mockResolvedValue(undefined),
     pauseActive: vi.fn().mockResolvedValue(null),
     // Album-context play resolves the parent album URI; default mock returns

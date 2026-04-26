@@ -191,6 +191,22 @@ export default function App() {
         sampledAt: Date.now(),
         prevSong: latestPlaybackSongRef.current,
       });
+      // For next: we already know what's coming up from the prefetched queue,
+      // so flip the title/art instantly. The same pickedOptimistic mechanism
+      // used by /api/play will clear once Spotify reports the new song
+      // (or matches it). Previous doesn't have a prefetched analogue, so
+      // it just rides the burst-poll path with the bar already at 0.
+      if (action === 'next') {
+        const first = upNextRef.current[0];
+        if (first?.song) {
+          setPickedOptimistic({
+            song: first.song,
+            artist: first.artist || '',
+            image_url: first.image_url || '',
+            prevSpotifySong: latestPlaybackSongRef.current,
+          });
+        }
+      }
     }
     try {
       await api.control(action);
@@ -344,7 +360,7 @@ export default function App() {
   // playStateHint is here so the polling loop re-arms when HEOS reports the
   // leader transitioned pause→play — without it, the loop would stay dormant
   // until the tab is hidden+shown.
-  const playback = usePlaybackProgress({
+  const { sample: playback, queue: upNext } = usePlaybackProgress({
     enabled: snap.spotifyConnected,
     playStateHint: snap.nowPlaying?.state || '',
     bumpToken: playBumpToken,
@@ -357,6 +373,9 @@ export default function App() {
   // Mirror the full sample so control() can compute the optimistic freeze
   // position synchronously without re-rendering.
   useEffect(() => { latestPlaybackRef.current = playback || null; }, [playback]);
+  // Mirror the queue so control('next') can swap to queue[0] synchronously.
+  const upNextRef = useRef([]);
+  useEffect(() => { upNextRef.current = upNext || []; }, [upNext]);
 
   // Reconcile the play-state override with the authoritative poll. Two modes:
   //   - 'pp' (play/pause): clear when polled is_playing matches.
@@ -727,6 +746,10 @@ const POLL_MS = 5000;
 const POLL_NEAR_END_MIN_MS = 800;
 function usePlaybackProgress({ enabled, playStateHint, bumpToken }) {
   const [sample, setSample] = useState(null); // { progress_ms, duration_ms, is_playing, song, ..., sampledAt }
+  // Up-next queue from Spotify, polled alongside playback. Used by the
+  // next-tap optimistic overlay so the title flips instantly to queue[0]
+  // instead of waiting for Spotify to propagate the skip.
+  const [queue, setQueue] = useState([]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -739,6 +762,7 @@ function usePlaybackProgress({ enabled, playStateHint, bumpToken }) {
         if (cancelled) return;
         const pb = r.playback;
         setSample(pb ? { ...pb, sampledAt: Date.now() } : null);
+        setQueue(Array.isArray(r.queue) ? r.queue : []);
         let next;
         if (pb?.is_playing) {
           // Schedule the next poll to land just after the predicted track end.
@@ -786,6 +810,6 @@ function usePlaybackProgress({ enabled, playStateHint, bumpToken }) {
     // tap forces a re-poll instead of waiting up to 5s.
   }, [enabled, playStateHint, bumpToken]);
 
-  return sample;
+  return { sample, queue };
 }
 
