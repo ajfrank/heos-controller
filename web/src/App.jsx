@@ -144,6 +144,19 @@ export default function App() {
         prevSpotifySong: latestPlaybackSongRef.current,
       });
     }
+    // Reset the time bar to 0 + flip the play button to Pause synchronously,
+    // so the user gets immediate confirmation before Spotify's 500–1500ms
+    // propagation. Without this the bar reads the OLD playback's progress_ms
+    // (or stays at the previous track's position) for up to 5s. Mirrors the
+    // 'skip' override used by next/previous; reconciled when polled.song
+    // diverges from the song that was playing at tap time.
+    setPlayStateOverride({
+      kind: 'pick',
+      is_playing: true,
+      progress_ms: 0,
+      sampledAt: Date.now(),
+      prevSong: latestPlaybackSongRef.current,
+    });
     // Auto-wake on the server can take 2-8s when speakers were idle. Show a
     // quiet "Waking…" hint after ~700ms so the wife isn't staring at silence
     // wondering if her tap registered. Cancelled the moment play resolves.
@@ -159,10 +172,19 @@ export default function App() {
           deadline: Date.now() + 10_000,
         };
       }
+      // Burst-poll like control('next'): immediate fetch + 1.2s + 2.5s catch
+      // Spotify's "I started playing the new track" report (typical ~500ms,
+      // worst-case ~2s with cold Connect daemon) without waiting the full
+      // 5s natural cadence.
       setPlayBumpToken((x) => x + 1);
+      burstTimers.current.push(
+        setTimeout(() => setPlayBumpToken((x) => x + 1), 1200),
+        setTimeout(() => setPlayBumpToken((x) => x + 1), 2500),
+      );
     } catch (e) {
       clearTimeout(wakeHint);
       setPickedOptimistic(null); // play failed — drop the overlay
+      setPlayStateOverride(null);
       showToast(e.message, 'error');
     } finally {
       playInflight.current = false;
@@ -396,17 +418,18 @@ export default function App() {
   const upNextRef = useRef([]);
   useEffect(() => { upNextRef.current = upNext || []; }, [upNext]);
 
-  // Reconcile the play-state override with the authoritative poll. Two modes:
+  // Reconcile the play-state override with the authoritative poll. Three modes:
   //   - 'pp' (play/pause): clear when polled is_playing matches.
-  //   - 'skip' (next/previous): clear when polled.song != song-at-tap-time.
-  //     Matching on is_playing here would mis-fire on a fast immediate poll
-  //     that catches the OLD track (still playing, same is_playing value) —
-  //     the bar would snap to the old position before the new track arrives.
+  //   - 'skip' (next/previous) and 'pick' (Quick Pick / search tap): clear
+  //     when polled.song != song-at-tap-time. Matching on is_playing here
+  //     would mis-fire on a fast immediate poll that catches the OLD track
+  //     (still playing, same is_playing value) — the bar would snap to the
+  //     old position before the new track arrives.
   // 4s safety net for either mode so a stranded override (Spotify session
   // moved, refresh failed, skip-to-same-song) can't freeze the bar permanently.
   useEffect(() => {
     if (!playStateOverride) return;
-    if (playStateOverride.kind === 'skip') {
+    if (playStateOverride.kind === 'skip' || playStateOverride.kind === 'pick') {
       if (playback?.song && playback.song !== playStateOverride.prevSong) {
         setPlayStateOverride(null);
         return;
@@ -593,6 +616,10 @@ export default function App() {
       // past the stale picked song). Drop it now — the bottom card will fall
       // back to whatever Spotify last reported.
       setPickedOptimistic(null);
+      // Same reasoning for the play-state override: 'pick' would otherwise
+      // keep is_playing=true and the bar ticking from 0 for the 4s safety
+      // window even though playback is now stopped.
+      setPlayStateOverride(null);
       // Honest signal when HEOS pause failed silently — speakers may keep playing
       // even though we cleared the selection. Toast nudges the user to verify.
       if (r?.partial) showToast('Stop sent — check speakers', 'error');
