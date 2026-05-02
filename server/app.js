@@ -240,6 +240,14 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       if (!SPOTIFY_URI_RE.test(String(uri))) {
         return res.status(400).json({ error: 'uri must be a Spotify URI like spotify:track:<id>' });
       }
+      // Cap label/sublabel/badge so a malformed client can't persist a 99KB
+      // string into recents.json + play-log.json (express.json's 100KB total-body
+      // cap leaves room for one giant field). Bloated entries fatten every
+      // subsequent boot's hydration and WS snapshot.
+      const tooLong = (s) => typeof s === 'string' && s.length > 200;
+      if (tooLong(label) || tooLong(sublabel) || tooLong(badge)) {
+        return res.status(400).json({ error: 'label/sublabel/badge must be 200 characters or fewer' });
+      }
 
       // Spotify only needs ONE speaker in the HEOS group to be a Connect device —
       // HEOS group sync mirrors audio to the rest. Pick the first active zone that
@@ -607,7 +615,11 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
 
   app.post('/api/volume', async (req, res) => {
     const { zone, level } = req.body;
-    if (typeof level !== 'number') return res.status(400).json({ error: 'level required' });
+    // Reject NaN/Infinity/out-of-range — Math.round(NaN) stays NaN and lands
+    // on HEOS's wire as `level=NaN`, which surfaces as an opaque protocol error.
+    if (typeof level !== 'number' || !Number.isFinite(level) || level < 0 || level > 100) {
+      return res.status(400).json({ error: 'level must be a number between 0 and 100' });
+    }
     if (!zone) return res.status(400).json({ error: 'zone required' });
     const z = state.zones.find((x) => x.name === zone);
     if (!z) return res.status(400).json({ error: `unknown zone: ${zone}` });
@@ -682,7 +694,8 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       }
       const oauthState = crypto.randomBytes(16).toString('hex');
       oauthStates.set(oauthState, now + OAUTH_STATE_TTL_MS);
-      setTimeout(() => oauthStates.delete(oauthState), OAUTH_STATE_TTL_MS);
+      // Expiry sweep happens on each /login insert (see loop above), so a
+      // per-entry timer would just queue work the next /login already covers.
       res.redirect(spotify.getAuthUrl(oauthState));
     } catch (e) {
       // Don't reflect the raw exception (often "SPOTIFY_CLIENT_ID not set",
@@ -867,6 +880,13 @@ export async function initHeosState({ heos, state, log = console }) {
 }
 
 export function wireHeosEvents({ heos, state, log = console }) {
+  // Idempotent: drop any prior 'event' listener so a re-subscribe (e.g. an
+  // initHeosState retry after a partial-success failure) can't stack handlers
+  // that all fire on every HEOS event. Today only one wireHeosEvents call
+  // happens per process, but this guard keeps that invariant cheap.
+  // Optional-chain because some test mocks pass a plain object without the
+  // EventEmitter surface (only `on` matters for them).
+  heos.removeAllListeners?.('event');
   const handler = async (frame) => {
     const cmd = frame.heos.command;
     const msg = frame.heos.message || '';
@@ -895,7 +915,6 @@ export function wireHeosEvents({ heos, state, log = console }) {
     }
   };
   heos.on('event', handler);
-  return () => heos.off('event', handler);
 }
 
 function safeJson(s) {

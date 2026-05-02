@@ -39,7 +39,11 @@ describe('api.state', () => {
   it('GETs /api/state and returns the json', async () => {
     fetchMock.mockReturnValueOnce(ok({ players: [], activePids: [] }));
     const r = await api.state();
-    expect(fetchMock).toHaveBeenCalledWith('/api/state', undefined);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/state');
+    // jsonFetch always wires an AbortSignal for the timeout — the assertion
+    // is on the URL + method, not on the absence of init.
+    expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(r.players).toEqual([]);
   });
 });

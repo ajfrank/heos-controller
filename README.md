@@ -28,7 +28,7 @@ brew install node
 ### 3. Configure this app
 
 ```sh
-cd "Random AI Stuff/Heos"
+cd heos-controller
 cp .env.example .env
 # edit .env and paste your Spotify credentials
 npm install
@@ -115,7 +115,7 @@ The Mac works fine for testing, but it sleeps. For a "just works, all the time" 
    #   WS_ALLOWED_ORIGINS=http://heos.local:8080,http://<pi-ip>:8080
    npm run build:web
    ```
-6. **One-time Spotify OAuth** (Spotify only allows loopback, so OAuth has to land on the Pi via an SSH tunnel):
+6. **One-time Spotify OAuth.** Spotify's OAuth callback URL is locked to `127.0.0.1`, so the consent screen has to be served from a browser whose `localhost:8080` is the *Pi's* `localhost:8080`. The SSH tunnel (`-L`) does exactly that — your Mac browser thinks it's hitting localhost, but the request lands on the Pi where Spotify's redirect can complete:
    - On the Pi: `node server/index.js`
    - On the Mac, in another terminal: `ssh -L 8080:localhost:8080 pi@heos.local`
    - On the Mac browser: open `http://127.0.0.1:8080`, click **Connect Spotify**, complete OAuth. The Pi writes `~/.heos-controller/spotify-tokens.json` and refreshes automatically forever after.
@@ -152,4 +152,10 @@ If `git pull` complains about local changes (someone tweaked a file directly on 
 - **Auto-restart on a wedge (Pi)**: the controller exposes `/healthz` (200 when HEOS is connected, 503 otherwise). For a paranoid 30-second-MTTR safety net, add a cron job: `*/5 * * * * curl -fsS http://localhost:8080/healthz >/dev/null || sudo systemctl restart heos-controller`.
 - **Spotify says "Reconnect" right after OAuth (Pi)**: the Pi's clock is wrong. Spotify's token expiry is absolute, so a Pi that booted before NTP synced will think every fresh token is already expired. Check with `timedatectl status` — `System clock synchronized:` should say `yes`. Pi OS Bookworm runs `systemd-timesyncd` by default; if NTP is blocked on your network, `sudo apt install -y systemd-timesyncd && sudo timedatectl set-ntp true`.
 - **systemd unit fails with "Exec format error" or "No such file" (Pi)**: the unit's `ExecStart=` expects Node at `/usr/bin/node` (where the README's `apt install -y nodejs` puts it). If you used `nvm` instead, `which node` will show a path under `~/.nvm/...`. Either edit `ExecStart=` in `/etc/systemd/system/heos-controller.service` to that path, or symlink: `sudo ln -s "$(which node)" /usr/bin/node`. Then `sudo systemctl daemon-reload && sudo systemctl restart heos-controller`.
+- **Backing up before the SD card dies (Pi)**: microSD cards do eventually wear out. Two scp lines from your Mac save you a re-OAuth and re-config dance after a card swap:
+  ```sh
+  scp -r pi@heos.local:.heos-controller ~/heos-backup
+  scp pi@heos.local:heos-controller/.env ~/heos-backup/
+  ```
+  That captures Spotify tokens, recents, the device-id cache, and your Spotify app credentials. Restore on a fresh Pi by reversing each `scp` (after step 5 of the Pi setup, before step 6).
 - **Wife still doesn't like it**: open an issue with what specifically would make it better.
