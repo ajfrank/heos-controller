@@ -92,14 +92,27 @@ export async function exchangeCode(code) {
     refresh_token: t.refresh_token,
     expires_at: Date.now() + (t.expires_in - 60) * 1000,
   });
+  // Fresh OAuth — clear any prior refresh-failure backoff so the next
+  // accessToken() call doesn't bounce off a stale 30s window.
+  refreshFailedUntil = 0;
 }
 
 // Single-flight: concurrent callers share one refresh round-trip. Spotify rotates
 // the refresh_token on each call, so two parallel refreshes would invalidate one
 // another and lock the user out.
 let inflightRefresh = null;
+// After a refresh fails (revoked refresh_token, NTP skew, etc.), short-circuit
+// further refresh attempts for 30s. Without this, every accessToken() caller
+// re-tries the refresh — the 5s playback poll alone fires 12 wasted refresh
+// requests per minute against a known-broken token, plus log noise. Cleared
+// on success and on a fresh exchangeCode().
+const REFRESH_BACKOFF_MS = 30_000;
+let refreshFailedUntil = 0;
 
 async function refresh() {
+  if (refreshFailedUntil > Date.now()) {
+    throw new Error(REAUTH_SENTINEL);
+  }
   if (inflightRefresh) return inflightRefresh;
   inflightRefresh = (async () => {
     const tokens = loadTokens();
@@ -127,7 +140,21 @@ async function refresh() {
       expires_at: Date.now() + (t.expires_in - 60) * 1000,
     });
   })();
-  try { await inflightRefresh; } finally { inflightRefresh = null; }
+  try {
+    await inflightRefresh;
+    refreshFailedUntil = 0;
+  } catch (e) {
+    refreshFailedUntil = Date.now() + REFRESH_BACKOFF_MS;
+    throw e;
+  } finally {
+    inflightRefresh = null;
+  }
+}
+
+// Test seam: reset the refresh backoff so a test that simulates a failed
+// refresh doesn't poison subsequent test cases that share module state.
+export function _resetRefreshBackoff() {
+  refreshFailedUntil = 0;
 }
 
 // Sentinel thrown when Spotify auth is unrecoverable (refresh token revoked,

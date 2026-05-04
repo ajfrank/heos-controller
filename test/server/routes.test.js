@@ -275,6 +275,22 @@ describe('POST /api/play', () => {
     expect(res.status).toBe(400);
   });
 
+  // Pass #7: cap label/sublabel/badge so a malformed/abusive client can't
+  // persist a 99KB string into recents.json + play-log.json. express.json
+  // would let it through (its 100KB total-body cap leaves room for one giant
+  // field); the route-level cap is the trust boundary.
+  it.each([
+    ['label', { label: 'x'.repeat(201), sublabel: '', badge: '' }],
+    ['sublabel', { label: 'ok', sublabel: 'x'.repeat(201), badge: '' }],
+    ['badge', { label: 'ok', sublabel: '', badge: 'x'.repeat(201) }],
+  ])('400s when %s exceeds 200 chars', async (_, fields) => {
+    const { app, state } = buildTestApp();
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
+    const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc', ...fields });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/200 characters/);
+  });
+
   // T1.4: when the Spotify call throws the SPOTIFY_REAUTH_REQUIRED sentinel,
   // routes translate it to 401 + code:'reauth' so the UI flips its banner.
   it('returns 401 + code:"reauth" when Spotify throws SPOTIFY_REAUTH_REQUIRED', async () => {
@@ -528,6 +544,25 @@ describe('POST /api/volume', () => {
     seedPlayersAndZones(state, [{ pid: '1', name: 'Bar' }]);
     const res = await request(app).post('/api/volume').send({ zone: 'Bar', level: 'loud' });
     expect(res.status).toBe(400);
+  });
+
+  // Pass #7: out-of-range and null previously slipped past the bare typeof
+  // check (typeof null === 'object' caught it; -1/101 didn't) and surfaced
+  // as opaque HEOS errors. Range + Number.isFinite at the entry point now.
+  // (NaN/Infinity round-trip to null through JSON.stringify, so over the
+  // wire the route only ever sees finite numbers or null — the isFinite
+  // check defends against direct callers that bypass JSON.)
+  it.each([-1, 101, null, 50.5])('rejects invalid level %p with 400 / accepts in-range numbers', async (level) => {
+    const { app, state, heos } = buildTestApp();
+    seedPlayersAndZones(state, [{ pid: '1', name: 'Bar' }]);
+    const res = await request(app).post('/api/volume').send({ zone: 'Bar', level });
+    if (level === 50.5) {
+      expect(res.status).toBe(200);
+      expect(heos.setVolume).toHaveBeenCalledWith('1', 50.5);
+    } else {
+      expect(res.status).toBe(400);
+      expect(heos.setVolume).not.toHaveBeenCalled();
+    }
   });
 
   it('400s when zone is missing', async () => {

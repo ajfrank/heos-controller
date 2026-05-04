@@ -717,7 +717,11 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     oauthStates.delete(String(oauthState));
     try {
       await spotify.exchangeCode(String(code));
-      res.send('<html><body style="font-family:system-ui;padding:2rem"><h2>Spotify connected ✓</h2><p>You can close this tab and return to the controller.</p></body></html>');
+      // Land back on the controller instead of stranding the user on a static
+      // success page. The redirect resolves to the same origin (loopback during
+      // the SSH-tunnel OAuth dance), so the controller UI loads with the new
+      // tokens already on disk and the banner gone on the next /api/state.
+      res.redirect('/');
     } catch (e) {
       console.warn('[spotify] /callback exchange failed:', e.message);
       res.status(500).type('text/plain').send('Spotify connection failed — please try again.');

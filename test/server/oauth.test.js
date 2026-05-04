@@ -96,7 +96,7 @@ describe('GET /api/spotify/callback', () => {
     expect(res.text).toBe('Spotify error: <script>alert(1)</script>');
   });
 
-  it('exchanges the code and renders success when state is valid', async () => {
+  it('exchanges the code and redirects to the controller when state is valid', async () => {
     const { app, spotify } = buildTestApp({
       spotify: {
         getAuthUrl: vi.fn((s) => `https://x/?s=${s}`),
@@ -106,8 +106,10 @@ describe('GET /api/spotify/callback', () => {
     const login = await request(app).get('/api/spotify/login');
     const minted = new URL(login.headers.location).searchParams.get('s');
     const res = await request(app).get(`/api/spotify/callback?code=thecode&state=${minted}`);
-    expect(res.status).toBe(200);
-    expect(res.text).toMatch(/Spotify connected/);
+    // Pass #8: callback now 302→/ instead of returning a static "✓" HTML
+    // page, so the user lands back on the controller after OAuth.
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe('/');
     expect(spotify.exchangeCode).toHaveBeenCalledWith('thecode');
   });
 
@@ -120,7 +122,7 @@ describe('GET /api/spotify/callback', () => {
     const login = await request(app).get('/api/spotify/login');
     const minted = new URL(login.headers.location).searchParams.get('s');
     const ok = await request(app).get(`/api/spotify/callback?code=c1&state=${minted}`);
-    expect(ok.status).toBe(200);
+    expect(ok.status).toBe(302);
     const replay = await request(app).get(`/api/spotify/callback?code=c2&state=${minted}`);
     expect(replay.status).toBe(400);
     expect(spotify.exchangeCode).toHaveBeenCalledTimes(1);

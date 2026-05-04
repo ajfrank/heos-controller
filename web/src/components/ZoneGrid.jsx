@@ -7,13 +7,26 @@ import { AnimatePresence, motion } from 'framer-motion';
 // pointerup/keyboard press capture.
 export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid = {}, wsReady = true, onToggle, onVolume, onVolumeEnd }) {
   // Pre-snapshot: show a quiet "Connecting…" so a slow WS handshake doesn't
-  // read as a broken app. Empty zones AFTER the first snapshot is a legitimate
-  // "no zones found" state — we let it through.
+  // read as a broken app.
   if (!wsReady && zones.length === 0) {
     return (
       <div className="flex items-center justify-center gap-2 py-6 text-default-500 text-small">
         <span className="inline-block w-3 h-3 rounded-full bg-default-400 animate-pulse" />
         Connecting…
+      </div>
+    );
+  }
+  // Snapshot landed but resolved zero zones. Two scenarios collapse here:
+  //   (a) HEOS is still discovering speakers (transient 5-30s on cold boot).
+  //   (b) zones.json speaker names don't match anything HEOS reports (typo,
+  //       renamed speaker). Persistent until edited.
+  // The "yet" hints at (a); the path hint resolves (b). Without this fallback
+  // the panel renders an empty grid div with no children — looks broken.
+  if (zones.length === 0) {
+    return (
+      <div className="text-default-500 text-small py-4 px-1">
+        No speakers found yet — your zones config doesn't match any HEOS player names.
+        Check <code className="text-default-400">server/zones.json</code> on the Pi.
       </div>
     );
   }

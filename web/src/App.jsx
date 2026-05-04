@@ -646,9 +646,22 @@ export default function App() {
           <Card radius="lg" classNames={{ base: 'bg-content2/70 border border-danger/60' }}>
             <CardBody className="flex flex-row items-center justify-between gap-3 p-3">
               <span>{reauthNeeded ? 'Spotify needs to reconnect.' : "Spotify isn't connected yet."}</span>
-              <Button as="a" href="/api/spotify/login" color="success" radius="lg" className="bg-[#1db954] text-white font-semibold">
-                {reauthNeeded ? 'Reconnect' : 'Connect'}
-              </Button>
+              {/* Spotify locks the OAuth callback to 127.0.0.1, so the auth
+                  flow only completes when the browser is hitting localhost on
+                  the Pi (i.e. via SSH tunnel). On any other host (heos.local,
+                  LAN IP) the button would 302 to Spotify, the wife would log
+                  in, then Spotify's redirect would land on HER device's
+                  127.0.0.1 — empty page, no help. Show an explainer instead. */}
+              {(typeof location !== 'undefined' &&
+                (location.hostname === '127.0.0.1' || location.hostname === 'localhost')) ? (
+                <Button as="a" href="/api/spotify/login" color="success" radius="lg" className="bg-[#1db954] text-white font-semibold">
+                  {reauthNeeded ? 'Reconnect' : 'Connect'}
+                </Button>
+              ) : (
+                <span className="text-tiny text-default-400 max-w-[260px] text-right">
+                  Spotify reauth has to be run from the Pi — ask AJ.
+                </span>
+              )}
             </CardBody>
           </Card>
         )}
