@@ -31,7 +31,7 @@ export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid 
     );
   }
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2.5">
+    <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2.5">
       {zones.map((z) => {
         const active = activeZones.includes(z.name);
         const leaderPid = z.pids[0];
@@ -80,7 +80,24 @@ export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid 
                         className="text-tiny text-default-500 truncate"
                         title={npLine}
                       >
-                        <span className={isPlaying ? 'text-primary' : ''}>{isPlaying ? '♪ ' : '⏸ '}</span>{npLine}
+                        {/* iOS Safari renders Unicode ⏸ (U+23F8) as a colored
+                            emoji-style glyph that doesn't match the rest of
+                            the design. Inline SVGs render consistently across
+                            iOS / macOS / Android and inherit currentColor so
+                            the text-primary / text-default-500 still drive
+                            the green-vs-muted state. */}
+                        <span className={`inline-flex items-center mr-1 align-baseline ${isPlaying ? 'text-primary' : 'text-default-500'}`}>
+                          {isPlaying ? (
+                            <svg viewBox="0 0 24 24" className="w-2.5 h-2.5 shrink-0" fill="currentColor" aria-hidden="true">
+                              <path d="M9 18V6l12 6-12 6z" />
+                            </svg>
+                          ) : (
+                            <svg viewBox="0 0 24 24" className="w-2.5 h-2.5 shrink-0" fill="currentColor" aria-hidden="true">
+                              <rect x="6" y="5" width="4" height="14" rx="1" />
+                              <rect x="14" y="5" width="4" height="14" rx="1" />
+                            </svg>
+                          )}
+                        </span>{npLine}
                       </span>
                     )}
                   </span>
