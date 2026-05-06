@@ -169,4 +169,19 @@ describe('WebSocket Origin allow-list', () => {
     expect(result.status).toBe(403);
     if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
   });
+
+  // Pass #9: iOS Safari resolves mDNS hostnames with a trailing dot
+  // (`heos.local` → `heos.local.`) and the WS Origin header inherits it.
+  // Without normalization, a phone hitting heos.local was 403'd while a Mac
+  // hitting the same URL worked. Allow-list contains 'http://localhost:8080';
+  // a request from 'http://localhost.:8080' should match after normalization.
+  it('accepts an Origin with a trailing dot in the host (iOS mDNS quirk)', async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { origin: 'http://localhost.:8080' });
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    });
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
 });

@@ -28,9 +28,29 @@ function parseAllowedOrigins() {
     (process.env.WS_ALLOWED_ORIGINS ||
       'http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173')
       .split(',')
-      .map((s) => s.trim())
+      .map((s) => normalizeOrigin(s.trim()))
       .filter(Boolean),
   );
+}
+
+// Strip trailing dots from the host portion of an Origin URL. iOS Safari (and
+// some other mDNS resolvers) navigate to `http://heos.local./` with a trailing
+// period, and the browser then sends `Origin: http://heos.local.:8080` on the
+// WS handshake — which won't match `http://heos.local:8080` in the allow-list.
+// Normalizing both sides of the comparison (parse + lookup) means the env var
+// only needs the canonical form. Returns the input unchanged on parse failure
+// so we don't accidentally widen the allow-list.
+function normalizeOrigin(origin) {
+  if (!origin) return origin;
+  try {
+    const u = new URL(origin);
+    if (u.hostname.endsWith('.')) {
+      u.hostname = u.hostname.replace(/\.+$/, '');
+    }
+    return u.origin;
+  } catch {
+    return origin;
+  }
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -94,7 +114,7 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
   app.use('/api', (req, res, next) => {
     if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
     const origin = req.get('Origin');
-    if (!origin || allowedOrigins.has(origin)) return next();
+    if (!origin || allowedOrigins.has(normalizeOrigin(origin))) return next();
     res.status(403).json({ error: 'forbidden origin' });
   });
 
@@ -751,7 +771,7 @@ export function attachWebSocket(server, { state, spotify }) {
     path: '/ws',
     verifyClient: (info, cb) => {
       const origin = info.origin;
-      if (!origin || allowed.has(origin)) return cb(true);
+      if (!origin || allowed.has(normalizeOrigin(origin))) return cb(true);
       cb(false, 403, 'Forbidden origin');
     },
   });
