@@ -59,10 +59,17 @@ export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid 
               shadow="none"
               classNames={{
                 base: [
-                  'w-full h-full min-h-[88px] border transition-colors',
+                  // transition-all (vs transition-colors) so the per-state
+                  // min-h + opacity transitions animate smoothly when a zone
+                  // toggles, instead of snapping.
+                  'w-full h-full border transition-all',
                   active
-                    ? 'bg-transparent border-[2.5px] border-primary'
-                    : 'bg-white/[0.03] border-white/10',
+                    ? 'min-h-[88px] bg-transparent border-[2.5px] border-primary'
+                    // Inactive: shorter + dimmed so the active zone reads as
+                    // "the one that's on" at a glance. opacity-60 on the Card
+                    // fades all children (name, np line, icon) together — no
+                    // need to opacity-tag each child individually.
+                    : 'min-h-[64px] bg-white/[0.03] border-white/10 opacity-60',
                 ].join(' '),
               }}
             >
