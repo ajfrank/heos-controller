@@ -409,6 +409,24 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
         } else {
           playArgs = { contextUri: uri };
         }
+        // Pre-emptive volume restore. By this point HEOS has likely reset
+        // the leader's volume on the Connect wake (transferPlayback above).
+        // Setting NOW means audio starts at the user's level instead of
+        // HEOS's ~80 default — no audible blast even on the slowest UI
+        // poll cadence. The post-play restore (after res.json) is still
+        // wired as a safety net for slow wakes that reset AFTER this point.
+        // Parallel + allSettled so one offline speaker doesn't strand the
+        // others; logged but not surfaced to the user.
+        await Promise.allSettled(
+          Object.entries(priorVolumes).map(async ([pid, level]) => {
+            try {
+              await getH().setVolume(pid, level);
+              state.setVolume(pid, level);
+            } catch (e) {
+              console.warn('[heos] pre-play volume restore failed for', pid, ':', e.message);
+            }
+          }),
+        );
         await spotify.play(resolvedDeviceId, playArgs);
       } catch (playErr) {
         // If the cached deviceId is stale (speaker reset, account changed),
