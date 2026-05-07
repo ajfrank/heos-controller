@@ -252,6 +252,16 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
     try {
       const pids = state.activePids;
       if (!pids.length) return res.status(400).json({ error: 'No active zones selected' });
+      // Snapshot the wife-set volumes BEFORE we do anything that could wake
+      // the speakers. HEOS firmware resets the leader's volume to its default
+      // (~80) when it wakes via Spotify Connect — without restoring, every
+      // first play after idle blasts at 80 regardless of what the slider said.
+      // Captured here so a slow HEOS volume_changed event can't overwrite the
+      // pre-tap value before we get to use it.
+      const priorVolumes = {};
+      for (const pid of pids) {
+        if (typeof state.volumes[pid] === 'number') priorVolumes[pid] = state.volumes[pid];
+      }
       const { uri, label, sublabel, art, badge } = req.body;
       if (!uri) return res.status(400).json({ error: 'uri required' });
       // Validate the URI shape before we hand it to Spotify. A malformed body
@@ -481,6 +491,29 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
         }
       }
       res.json({ ok: true, via, device: resolvedDeviceName, device_id: resolvedDeviceId });
+
+      // Background volume restore. HEOS resets the leader's volume on Spotify
+      // Connect wake (~80 default) — re-apply the pre-tap snapshot so the wife
+      // doesn't get blasted on first play after idle. Two attempts cover both
+      // fast wakes (reset already happened) and slow wakes (reset arrives
+      // after the first attempt). The +5 threshold means we DON'T undo a
+      // user's manual down-adjust during the window.
+      const restoreVolumes = async () => {
+        const h = getH();
+        for (const [pid, level] of Object.entries(priorVolumes)) {
+          const current = state.volumes[pid];
+          if (typeof current === 'number' && current > level + 5) {
+            try {
+              await h.setVolume(pid, level);
+              state.setVolume(pid, level);
+            } catch (e) {
+              console.warn('[heos] post-play volume restore failed for', pid, ':', e.message);
+            }
+          }
+        }
+      };
+      setTimeout(restoreVolumes, 500);
+      setTimeout(restoreVolumes, 2000);
     } catch (e) {
       sendErr(res, e);
     }
