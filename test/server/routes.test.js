@@ -353,6 +353,34 @@ describe('POST /api/play', () => {
     expect(store['spotify-devices.json']).toEqual({ '1': 'd-bar' });
   });
 
+  // Regression guard for the Spotify-Connect-wake-volume-blast bug. HEOS
+  // firmware resets the leader's volume to its default (~80) when it wakes
+  // via Spotify Connect, so without an explicit pre-play setVolume the wife
+  // gets blasted on every first play after idle. The fix snapshots state
+  // volumes at handler entry and re-applies them BEFORE spotify.play, so
+  // audio actually starts at the wife's level. If anyone moves the
+  // setVolume after spotify.play (or removes it), this test fails.
+  it('pre-emptively setVolumes each active pid to the snapshot value before spotify.play', async () => {
+    const { app, state, spotify, heos } = buildTestApp();
+    seed(state, [{ pid: '1', name: 'Bar' }, { pid: '2', name: 'Porch' }], ['Bar']);
+    state.setVolume('1', 22); // wife's preferred level — must survive the wake
+    spotify.getDevices.mockResolvedValue([{ id: 'd-bar', name: 'Bar' }]);
+
+    const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
+    expect(res.status).toBe(200);
+
+    // Pre-emptive setVolume must have been called with the snapshot level
+    // (not whatever HEOS would have reset it to).
+    expect(heos.setVolume).toHaveBeenCalledWith('1', 22);
+
+    // Order matters: the setVolume must precede the spotify.play call.
+    // Use mock.invocationCallOrder (a global counter across all vi.fn mocks
+    // in the same module) to assert the sequencing, not just the calls.
+    const setVolOrder = heos.setVolume.mock.invocationCallOrder[0];
+    const playOrder = spotify.play.mock.invocationCallOrder[0];
+    expect(setVolOrder).toBeLessThan(playOrder);
+  });
+
   it('clears a stale cache entry and surfaces the actionable 404 when wake hits Device not found', async () => {
     // Without the 500→404 conversion, the first tap looked like a server crash;
     // only the second tap (after the cache prune) showed the helpful toast.
