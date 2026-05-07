@@ -108,22 +108,32 @@ export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid 
                       </span>
                     )}
                   </span>
-                  <AnimatePresence>
-                    {active && (
-                      <motion.span
-                        initial={{ scale: 0, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        exit={{ scale: 0, opacity: 0 }}
-                        transition={{ type: 'spring', stiffness: 500, damping: 22 }}
-                        className="mt-0.5 inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary text-primary-foreground"
-                        aria-label="Active"
-                      >
-                        <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M5 12l5 5 9-11" />
-                        </svg>
-                      </motion.span>
-                    )}
-                  </AnimatePresence>
+                  {/* Always-rendered selector circle. Inactive = empty ring,
+                      active = filled green circle + checkmark. Color
+                      transitions on bg + border + checkmark opacity give
+                      a smooth fill-in feel on toggle. The outer Card already
+                      provides the tap-bounce, so no spring pop here. */}
+                  <span
+                    className={[
+                      'mt-0.5 inline-flex items-center justify-center w-6 h-6 rounded-full border-2 shrink-0 transition-colors duration-200',
+                      active
+                        ? 'bg-primary border-primary text-primary-foreground'
+                        : 'bg-transparent border-default-400/50 text-default-400',
+                    ].join(' ')}
+                    aria-hidden="true"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      className={`w-4 h-4 transition-opacity duration-200 ${active ? 'opacity-100' : 'opacity-0'}`}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M5 12l5 5 9-11" />
+                    </svg>
+                  </span>
                 </button>
                 <AnimatePresence initial={false}>
                   {active && (

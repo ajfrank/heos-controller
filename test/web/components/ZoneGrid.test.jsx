@@ -47,10 +47,20 @@ describe('ZoneGrid', () => {
     expect(screen.queryByLabelText('Porch volume')).not.toBeInTheDocument();
   });
 
-  it('shows the active checkmark on active zones', () => {
+  it('marks active zones with aria-pressed and renders the filled selector', () => {
     const { container } = renderZG({ ...baseProps, activeZones: ['Porch'] });
-    // Active zones render an SVG checkmark inside a span with aria-label="Active".
-    expect(container.querySelector('[aria-label="Active"]')).toBeInTheDocument();
+    // Each zone is a button with aria-pressed reflecting active state.
+    // (Previously a separate aria-label="Active" sat on the visual indicator,
+    // but the button-level aria-pressed is the canonical a11y signal — the
+    // selector circle is now visual-only / aria-hidden.)
+    const porchButton = screen.getByRole('button', { name: /Porch/ });
+    expect(porchButton).toHaveAttribute('aria-pressed', 'true');
+    const upstairsButton = screen.getByRole('button', { name: /Upstairs/ });
+    expect(upstairsButton).toHaveAttribute('aria-pressed', 'false');
+    // Visual: active selector has the primary-fill background class on the
+    // circle just before the checkmark SVG. Inactive selector has a border
+    // utility instead. Targeting via the unique class differential.
+    expect(container.querySelector('span.bg-primary.border-primary')).toBeInTheDocument();
   });
 
   it('renders no cards when zones is empty (no crash)', () => {
