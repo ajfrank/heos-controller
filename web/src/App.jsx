@@ -207,8 +207,20 @@ export default function App() {
   // Track burst-poll setTimeout ids so the cleanup effect can cancel them
   // if the component unmounts within 2.5s of a skip (HMR, page reload, etc).
   const burstTimers = useRef([]);
+  // Throttle Next/Previous to 300ms minimum spacing. Spotify rate-limits
+  // skip operations after several rapid skips (~30s cool-down, surfaced as
+  // HEOS eid=17 → "Skipping too fast" toast). Mashing the button used to
+  // both fire pointless API calls AND trip the rate-limit. First-tap-fires
+  // semantics keep the response snappy; only the SECOND tap inside 300ms
+  // is dropped, with the natural button press feedback as the visual cue.
+  const lastSkipAt = useRef(0);
 
   async function control(action) {
+    if (action === 'next' || action === 'previous') {
+      const now = Date.now();
+      if (now - lastSkipAt.current < 300) return;
+      lastSkipAt.current = now;
+    }
     const pb = latestPlaybackRef.current;
     if (action === 'play' || action === 'pause') {
       const next = action === 'play';

@@ -179,3 +179,50 @@ describe('Burst-poll timer cleanup on unmount (audit pass #6)', () => {
     }
   });
 });
+
+// Spotify rate-limits skip operations after rapid skips (~30s cool-down,
+// surfaced as HEOS eid=17). Mashing Next used to fire pointless API calls
+// AND trip the limit. A 300ms client-side throttle drops bursts; first tap
+// fires immediately so the response stays snappy.
+describe('Next/Previous throttling (300ms minimum spacing)', () => {
+  it('drops a second Next tap fired within 300ms of the first', async () => {
+    api.playbackPosition.mockResolvedValue({
+      playback: { is_playing: true, progress_ms: 30_000, duration_ms: 200_000, song: 'Old Track' },
+      queue: [{ song: 'Next Track', artist: 'A', image_url: '', uri: 'spotify:track:n' }],
+    });
+    renderApp(App);
+    await waitFor(() => expect(npProps()).toBeDefined());
+    await waitFor(() => expect(npProps().playback?.is_playing).toBe(true));
+
+    // Two Next taps in immediate succession (well under 300ms apart since
+    // they're synchronous in this test).
+    await act(async () => {
+      npProps().onControl('next');
+      npProps().onControl('next');
+      await Promise.resolve();
+    });
+
+    expect(api.control).toHaveBeenCalledTimes(1);
+    expect(api.control).toHaveBeenCalledWith('next');
+  });
+
+  it('throttles Previous on the same window as Next (shared rate limit)', async () => {
+    api.playbackPosition.mockResolvedValue({
+      playback: { is_playing: true, progress_ms: 30_000, duration_ms: 200_000, song: 'Old Track' },
+      queue: [],
+    });
+    renderApp(App);
+    await waitFor(() => expect(npProps()).toBeDefined());
+    await waitFor(() => expect(npProps().playback?.is_playing).toBe(true));
+
+    // First tap (next), then a Previous within the same window — both
+    // share the throttle so the second is dropped.
+    await act(async () => {
+      npProps().onControl('next');
+      npProps().onControl('previous');
+      await Promise.resolve();
+    });
+    expect(api.control).toHaveBeenCalledTimes(1);
+    expect(api.control).toHaveBeenCalledWith('next');
+  });
+});
