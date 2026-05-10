@@ -125,6 +125,22 @@ describe('HeosClient frame parser', () => {
     });
   });
 
+  // Audit pass #10: EID parsing was previously regex-based (`/eid=17/.test`)
+  // which would have matched eid=170, eid=1700, etc. — a real footgun if
+  // HEOS firmware ever uses 3-digit codes. After refactoring to
+  // URLSearchParams, eid=170 must NOT trigger the EID17 ("Skipping too
+  // fast") translation; it should fall through to the generic error.
+  it('does NOT match eid=170 against the eid=17 translation (regex anchor regression)', async () => {
+    const { client, sock } = await connectedClient();
+
+    const sendPromise = client.send('player/play_next', { pid: '1' });
+    sock.feed('{"heos":{"command":"player/play_next","result":"fail","message":"eid=170&text=Hypothetical future code&pid=1"}}\r\n');
+    const err = await sendPromise.catch((e) => e);
+    expect(err.code).toBeUndefined(); // generic fallback, not EID17
+    expect(err.message).not.toMatch(/Skipping too fast/);
+    expect(err.message).toMatch(/HEOS player\/play_next failed/);
+  });
+
   it('skips malformed (non-JSON) lines without crashing the parser', async () => {
     const { client, sock } = await connectedClient();
 

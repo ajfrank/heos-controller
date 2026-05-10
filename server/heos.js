@@ -184,12 +184,19 @@ class HeosClient extends EventEmitter {
       const result = frame?.heos?.result;
       if (result === 'fail') {
         const msg = frame?.heos?.message || '';
-        // Translate the most common opaque failures into something a human can act on.
-        if (cmd === 'group/set_group' && /syserrno=-9/.test(msg)) {
+        // Parse once via URLSearchParams so each branch is an exact-string
+        // compare on the parsed value. The previous regex-per-branch approach
+        // (`/eid=N/.test(msg)`) was fragile: `eid=170` would have matched the
+        // eid=17 branch and shown "Skipping too fast" for an unrelated error.
+        // Same parser the event-handler branch already uses below.
+        const failParams = new URLSearchParams(msg);
+        const eid = failParams.get('eid');
+        const syserrno = failParams.get('syserrno');
+        if (cmd === 'group/set_group' && syserrno === '-9') {
           target.reject(new Error(
             "These zones can't be grouped together — they likely share a multi-zone amp, or one is offline. Try a different combination."
           ));
-        } else if (/eid=13/.test(msg)) {
+        } else if (eid === '13') {
           // "Processing previous command". Hits when HEOS is mid-internal-state
           // change (e.g. just woke a speaker via Spotify Connect, or another
           // client is acting). _doApplyGroup catches EID13 and retries once
@@ -199,7 +206,7 @@ class HeosClient extends EventEmitter {
           );
           err.code = 'EID13';
           target.reject(err);
-        } else if (/eid=11/.test(msg)) {
+        } else if (eid === '11') {
           // "System busy" — distinct from eid=13 (per-command queue) but
           // similar UX: short delay then retry. _doApplyGroup catches and
           // retries; surfaced text mirrors EID13 so the wife sees the same
@@ -209,7 +216,7 @@ class HeosClient extends EventEmitter {
           );
           err.code = 'EID11';
           target.reject(err);
-        } else if (cmd === 'group/set_group' && /eid=7/.test(msg)) {
+        } else if (cmd === 'group/set_group' && eid === '7') {
           // "Command Couldn't Be Executed" — usually a transient speaker state
           // (just woke from Spotify Connect, mid-handoff, etc.). _doApplyGroup
           // catches this code and retries once before surfacing.
@@ -218,7 +225,7 @@ class HeosClient extends EventEmitter {
           );
           err.code = 'EID7';
           target.reject(err);
-        } else if (/eid=10/.test(msg)) {
+        } else if (eid === '10') {
           // "Unrecognized command" — almost certainly a code bug (typo in a
           // command path or an unsupported parameter for this firmware), not
           // something the user can fix. Surface that explicitly so we can
@@ -228,7 +235,7 @@ class HeosClient extends EventEmitter {
           );
           err.code = 'EID10';
           target.reject(err);
-        } else if (/eid=12/.test(msg)) {
+        } else if (eid === '12') {
           // "System error" — generic internal failure. Not retriable from our
           // side; usually means a speaker rebooted mid-command or lost its
           // mesh link. Tag with a code so callers can distinguish.
@@ -237,7 +244,7 @@ class HeosClient extends EventEmitter {
           );
           err.code = 'EID12';
           target.reject(err);
-        } else if (/eid=17/.test(msg)) {
+        } else if (eid === '17') {
           // "Reached skip limit" — Spotify rate-limits skip operations after
           // several rapid skips (and HEOS surfaces it through this code).
           // The cool-down is short (typically ~30s); the actionable user

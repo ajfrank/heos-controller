@@ -172,17 +172,17 @@ describe('GET /api/spotify/login bounds the in-flight state set', () => {
       await request(app).get('/api/spotify/login');
     }
     expect((await request(app).get('/api/spotify/login')).status).toBe(429);
-    // Jump Date.now() forward 11 minutes; the next /login synchronously sweeps
-    // expired entries (all 100 of them) before checking the cap. Using
-    // vi.setSystemTime rather than useFakeTimers avoids breaking supertest's
-    // internal HTTP parser.
-    const realNow = Date.now;
-    Date.now = () => realNow.call(Date) + 11 * 60 * 1000;
+    // Audit pass #10: use vi.setSystemTime instead of monkey-patching Date.now
+    // directly. The previous raw Date.now patch corrupted supertest's HTTP
+    // Date headers and intermittently tripped its parser with "Parse Error:
+    // Expected HTTP/, RTSP/ or ICE/". Vitest's fake timers hook at a layer
+    // that doesn't poison the HTTP module's wall-clock reads.
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: Date.now() + 11 * 60 * 1000 });
     try {
       const r = await request(app).get('/api/spotify/login');
       expect(r.status).toBe(302);
     } finally {
-      Date.now = realNow;
+      vi.useRealTimers();
     }
   });
 });

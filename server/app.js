@@ -518,17 +518,22 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       // user's manual down-adjust during the window.
       const restoreVolumes = async () => {
         const h = getH();
-        for (const [pid, level] of Object.entries(priorVolumes)) {
-          const current = state.volumes[pid];
-          if (typeof current === 'number' && current > level + 5) {
-            try {
-              await h.setVolume(pid, level);
-              state.setVolume(pid, level);
-            } catch (e) {
-              console.warn('[heos] post-play volume restore failed for', pid, ':', e.message);
+        // Parallel via allSettled — matches the pre-emptive restore above so
+        // an offline / slow speaker can't stall the others' restore by N×8s
+        // of sequential awaits. Each setVolume is independent on HEOS's wire.
+        await Promise.allSettled(
+          Object.entries(priorVolumes).map(async ([pid, level]) => {
+            const current = state.volumes[pid];
+            if (typeof current === 'number' && current > level + 5) {
+              try {
+                await h.setVolume(pid, level);
+                state.setVolume(pid, level);
+              } catch (e) {
+                console.warn('[heos] post-play volume restore failed for', pid, ':', e.message);
+              }
             }
-          }
-        }
+          }),
+        );
       };
       setTimeout(restoreVolumes, 500);
       setTimeout(restoreVolumes, 2000);
