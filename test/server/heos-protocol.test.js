@@ -111,6 +111,20 @@ describe('HeosClient frame parser', () => {
     await expect(sendPromise).rejects.toThrow(/HEOS player\/get_players failed: boom/);
   });
 
+  // Spotify rate-limits skip operations after rapid skipping; HEOS surfaces
+  // it as eid=17. Translate to a friendlier message tagged with EID17 so
+  // the toast reads "Skipping too fast..." instead of the raw error frame.
+  it('translates eid=17 (Spotify skip rate-limit) into a friendly message', async () => {
+    const { client, sock } = await connectedClient();
+
+    const sendPromise = client.send('player/play_next', { pid: '936564053' });
+    sock.feed('{"heos":{"command":"player/play_next","result":"fail","message":"eid=17&text=Reached skip limit&pid=936564053"}}\r\n');
+    await expect(sendPromise).rejects.toMatchObject({
+      message: expect.stringMatching(/Skipping too fast/),
+      code: 'EID17',
+    });
+  });
+
   it('skips malformed (non-JSON) lines without crashing the parser', async () => {
     const { client, sock } = await connectedClient();
 

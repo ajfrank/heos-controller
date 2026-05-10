@@ -237,6 +237,16 @@ class HeosClient extends EventEmitter {
           );
           err.code = 'EID12';
           target.reject(err);
+        } else if (/eid=17/.test(msg)) {
+          // "Reached skip limit" — Spotify rate-limits skip operations after
+          // several rapid skips (and HEOS surfaces it through this code).
+          // The cool-down is short (typically ~30s); the actionable user
+          // message is just "wait a moment before the next skip."
+          const err = new Error(
+            "Skipping too fast — Spotify needs a moment before the next skip."
+          );
+          err.code = 'EID17';
+          target.reject(err);
         } else {
           target.reject(new Error(`HEOS ${cmd} failed: ${msg || 'unknown'}`));
         }
