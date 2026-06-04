@@ -651,7 +651,7 @@ export default function App() {
         className="max-w-[900px] mx-auto px-4 flex flex-col gap-3.5 min-h-screen"
         style={{
           paddingTop: 'max(env(safe-area-inset-top), 16px)',
-          paddingBottom: 'max(env(safe-area-inset-bottom), 16px)',
+          paddingBottom: 'calc(env(safe-area-inset-bottom) + 24px)',
         }}
       >
         {showSpotifyBanner && (
