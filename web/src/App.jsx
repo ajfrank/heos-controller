@@ -15,7 +15,7 @@ if (localStorage.getItem(SOURCE_KEY)) localStorage.removeItem(SOURCE_KEY);
 
 const sectionCardClasses = {
   base: 'bg-content1/70 backdrop-blur-xl border border-white/10',
-  body: 'p-4',
+  body: 'p-3.5',
 };
 
 export default function App() {
@@ -648,10 +648,10 @@ export default function App() {
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, ease: 'easeOut' }}
-        className="max-w-[900px] mx-auto px-4 flex flex-col gap-3.5 min-h-screen"
+        className="max-w-[900px] mx-auto px-4 flex flex-col gap-3 min-h-screen"
         style={{
           paddingTop: 'max(env(safe-area-inset-top), 16px)',
-          paddingBottom: 'calc(env(safe-area-inset-bottom) + 24px)',
+          paddingBottom: 'calc(env(safe-area-inset-bottom) + 40px)',
         }}
       >
         {showSpotifyBanner && (
@@ -689,7 +689,7 @@ export default function App() {
 
         <Card radius="lg" classNames={sectionCardClasses}>
           <CardBody className={sectionCardClasses.body}>
-            <div className="flex items-center justify-between mb-3 ml-1">
+            <div className="flex items-center justify-between mb-2.5 ml-1">
               <p className="text-tiny uppercase tracking-[0.1em] text-default-500 font-semibold">Zones</p>
               <AnimatePresence>
                 {snap.activeZones.length > 0 && (
@@ -781,7 +781,7 @@ export default function App() {
 
 function SectionTitle({ children }) {
   return (
-    <p className="text-tiny uppercase tracking-[0.1em] text-default-500 font-semibold mb-3 ml-1">
+    <p className="text-tiny uppercase tracking-[0.1em] text-default-500 font-semibold mb-2.5 ml-1">
       {children}
     </p>
   );
