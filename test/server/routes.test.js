@@ -50,6 +50,8 @@ describe('POST /api/zones/active', () => {
     expect(res.status).toBe(200);
     expect(state.activeZones).toEqual(['Upstairs']);
     expect(state.activePids).toEqual(['1', '2']);
+    // Toggle path keeps the diff optimization — no { force: true } here.
+    // The play path forces; verifying that path is the test in /api/play below.
     expect(heos.applyGroup).toHaveBeenCalledWith(['1', '2']);
   });
 
@@ -324,6 +326,26 @@ describe('POST /api/play', () => {
     expect(res.body.error).toMatch(/Open Spotify on your phone/);
   });
 
+  // The play path must pass { force: true } so HEOS issues setGroup even when
+  // its getGroups view already matches the desired pids. Two bugs this guards
+  // against: (a) HEOS reports the group intact but a slave silently dropped;
+  // (b) the existing group's leader differs from the Spotify-visible leader,
+  // so transferPlayback routes audio to a slave's Connect endpoint with no
+  // mirror — only one speaker plays. See server/heos.js _doApplyGroup.
+  it('calls applyGroup with { force: true } on /api/play (skips diff optimization)', async () => {
+    const { app, state, spotify, heos } = buildTestApp();
+    seedPlayersAndZones(state,
+      [{ pid: '1', name: 'A' }, { pid: '2', name: 'B' }],
+      [{ name: 'Upstairs', pids: ['1', '2'] }],
+    );
+    state.setActiveZones(['Upstairs']);
+    spotify.getDevices.mockResolvedValue([{ id: 'd-a', name: 'A' }]);
+    const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
+    expect(res.status).toBe(200);
+    // The play path's call — leader first (A=Spotify-visible), with { force: true }.
+    expect(heos.applyGroup).toHaveBeenCalledWith(['1', '2'], { force: true });
+  });
+
   it('uses a cached deviceId to wake a sleeping speaker via transferPlayback', async () => {
     const { app, state, spotify, heos, store } = buildTestApp();
     // Seed the cache as if we'd previously played to "Bar" successfully.
@@ -334,7 +356,7 @@ describe('POST /api/play', () => {
     const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true, via: 'spotify-connect-wake' });
-    expect(heos.applyGroup).toHaveBeenCalledWith(['1']);
+    expect(heos.applyGroup).toHaveBeenCalledWith(['1'], { force: true });
     // Wake path uses play=true to start playback in one round trip.
     expect(spotify.transferPlayback).toHaveBeenCalledWith('d-bar', true);
     // Track plays inside its album context with offset, so Spotify's account-
@@ -455,7 +477,7 @@ describe('POST /api/play', () => {
     spotify.getDevices.mockResolvedValue([{ id: 'd-living', name: 'Living Room' }]);
     const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
     expect(res.status).toBe(200);
-    expect(heos.applyGroup).toHaveBeenCalledWith(['2', '1', '3']);
+    expect(heos.applyGroup).toHaveBeenCalledWith(['2', '1', '3'], { force: true });
     expect(spotify.transferPlayback).toHaveBeenCalledWith('d-living', false);
     expect(spotify.play).toHaveBeenCalledWith('d-living', {
       contextUri: 'spotify:album:default',
@@ -648,10 +670,11 @@ describe('POST /api/play rollback on transferPlayback failure', () => {
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/transfer boom/);
 
-    // applyGroup called twice: once to set the leader-first ordering, then
-    // again to restore the original group [1, 2].
+    // applyGroup called twice: once to set the leader-first ordering with
+    // force:true (the play path), then again WITHOUT force to restore the
+    // original group [1, 2] (rollback wants idempotence, not churn).
     expect(heos.applyGroup).toHaveBeenCalledTimes(2);
-    expect(heos.applyGroup).toHaveBeenNthCalledWith(1, ['1', '2']);
+    expect(heos.applyGroup).toHaveBeenNthCalledWith(1, ['1', '2'], { force: true });
     expect(heos.applyGroup).toHaveBeenNthCalledWith(2, ['1', '2']);
   });
 

@@ -143,6 +143,31 @@ describe('HeosClient.applyGroup', () => {
     expect(sock.written.some((w) => w.includes('group/set_group?pid=1111,2222,3333'))).toBe(true);
   });
 
+  // Leader-aware diff: pid-set matches but Spotify-visible leader differs from
+  // HEOS leader. Without this, transferPlayback routes Spotify Connect audio
+  // to Kitchen's endpoint, but Kitchen is a slave so HEOS doesn't mirror —
+  // only Kitchen plays. setGroup with Kitchen first re-leaders the group.
+  it('issues set_group when pid-set matches but leader position differs', async () => {
+    const { client, sock } = await connectedClient();
+    let call = 0;
+    sock.onWrite(() => (call++ === 0 ? FRAME.getGroups_LRleader : FRAME.setGroup_success));
+    await client.applyGroup([1111, 2222]); // want Kitchen as leader
+    expect(sock.written.some((w) => w.includes('group/set_group?pid=1111,2222'))).toBe(true);
+  });
+
+  // force:true (used by /api/play) bypasses the diff entirely — even if HEOS
+  // reports a perfectly-matching group, we still issue setGroup. Guards
+  // against HEOS getGroups lying (silent slave drop, mesh hiccup) where the
+  // group looks intact but only the leader actually plays.
+  it('issues set_group when force:true even if desired matches existing exactly', async () => {
+    const { client, sock } = await connectedClient();
+    sock.onWrite(() => FRAME.setGroup_success);
+    await client.applyGroup([1111, 2222], { force: true });
+    // get_groups should be SKIPPED — force bypasses the diff round-trip too.
+    expect(sock.written.some((w) => w.includes('group/get_groups'))).toBe(false);
+    expect(sock.written.some((w) => w.includes('group/set_group?pid=1111,2222'))).toBe(true);
+  });
+
   // Build a command-name-aware onWrite handler so tests don't break when the
   // sequence injects extra reads (e.g. the get_play_state pause-regroup-resume
   // path). `setGroupResponses` is consumed in order on each set_group write.
@@ -320,6 +345,32 @@ describe('HeosClient.applyGroup', () => {
     // Exactly one follow-up run, with the LATEST desired pids.
     expect(client._doApplyGroup).toHaveBeenCalledTimes(2);
     expect(calls[1]).toEqual([1, 2, 3, 4]);
+  });
+
+  // Force is sticky across coalescing: if a play-tap (force:true) lands
+  // behind an in-flight zone-toggle (force:false), the queued apply must
+  // STILL run forced. Otherwise the play would silently fall back to the
+  // diff optimization and reintroduce the single-speaker bug.
+  it('keeps force:true sticky when a forced apply is queued behind a non-forced one', async () => {
+    const { client } = await connectedClient();
+    const calls = [];
+    let resolveFirst;
+    client._doApplyGroup = vi.fn((pids, opts) => {
+      calls.push({ pids: pids.slice(), force: opts?.force });
+      if (calls.length === 1) return new Promise((r) => { resolveFirst = r; });
+      return Promise.resolve();
+    });
+
+    const p1 = client.applyGroup([1, 2]); // toggle (no force)
+    const p2 = client.applyGroup([1, 2, 3], { force: true }); // play (force)
+    const p3 = client.applyGroup([1, 2, 3], { force: false }); // toggle, after
+
+    resolveFirst();
+    await Promise.all([p1, p2, p3]);
+
+    expect(client._doApplyGroup).toHaveBeenCalledTimes(2);
+    expect(calls[0]).toEqual({ pids: [1, 2], force: false });
+    expect(calls[1]).toEqual({ pids: [1, 2, 3], force: true });
   });
 
   // Repro: a HEOS query (group/get_groups) occasionally times out — speaker

@@ -29,6 +29,19 @@ export const FRAME = {
     ],
   }) + '\r\n',
 
+  // Same speakers as getGroups_kitchenLR but Living Room is the leader.
+  // Used to verify the leader-aware diff check forces setGroup when the
+  // pid-set matches but Spotify-visible leader differs from HEOS leader.
+  getGroups_LRleader: JSON.stringify({
+    heos: { command: 'group/get_groups', result: 'success', message: '' },
+    payload: [
+      { name: 'Living Room + Kitchen', gid: 2222, players: [
+        { name: 'Living Room', pid: 2222, role: 'leader' },
+        { name: 'Kitchen', pid: 1111, role: 'member' },
+      ] },
+    ],
+  }) + '\r\n',
+
   setGroup_success: JSON.stringify({
     heos: { command: 'group/set_group', result: 'success', message: 'gid=1111&name=Kitchen + Living Room&pid=1111,2222' },
   }) + '\r\n',

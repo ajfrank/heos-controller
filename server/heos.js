@@ -359,38 +359,50 @@ class HeosClient extends EventEmitter {
    * cares about the final selection). Returns a promise that resolves once
    * the latest desired state has been applied (or rejects if it failed).
    * @param {string[]} pids
+   * @param {{force?: boolean}} [opts] - force:true bypasses the diff
+   *   optimization in _doApplyGroup. Used by /api/play, where a redundant
+   *   setGroup is much cheaper than a silent half-broken playback (e.g. when
+   *   the existing group has the right pids but wrong leader and HEOS won't
+   *   mirror Spotify Connect audio from a slave). Sticky across coalescing
+   *   — if any queued call sets force:true the final apply is forced.
    */
-  applyGroup(pids) {
+  applyGroup(pids, { force = false } = {}) {
     if (this._groupInflight) {
       if (this._groupPending) {
         // Overwrite pending desired pids — the user has toggled again, so
-        // the previously queued state is already stale.
+        // the previously queued state is already stale. Force is sticky:
+        // a play-tap behind a toggle-tap must still bypass the diff check.
         this._groupPending.pids = pids;
+        if (force) this._groupPending.force = true;
         return this._groupPending.promise;
       }
       let resolve, reject;
       const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
-      this._groupPending = { pids, promise, resolve, reject };
+      this._groupPending = { pids, force, promise, resolve, reject };
       return promise;
     }
     this._groupInflight = (async () => {
       try {
-        await this._doApplyGroup(pids);
+        await this._doApplyGroup(pids, { force });
       } finally {
         const next = this._groupPending;
         this._groupPending = null;
         this._groupInflight = null;
         if (next) {
           // Run the latest queued desired state and forward the result.
-          this.applyGroup(next.pids).then(next.resolve, next.reject);
+          this.applyGroup(next.pids, { force: next.force }).then(next.resolve, next.reject);
         }
       }
     })();
     return this._groupInflight;
   }
 
-  /** Idempotent group apply — no-op when current state already matches. @param {string[]} pids */
-  async _doApplyGroup(pids) {
+  /** Idempotent group apply — no-op when current state already matches.
+   * @param {string[]} pids
+   * @param {{force?: boolean}} [opts] - force:true skips the pid-set/leader
+   *   diff and always issues setGroup. See applyGroup() for why.
+   */
+  async _doApplyGroup(pids, { force = false } = {}) {
     if (!pids.length) return;
     // The diff check is an optimization, not a correctness requirement. If
     // getGroups times out (HEOS just woken from idle, transient mesh hiccup),
@@ -409,6 +421,24 @@ class HeosClient extends EventEmitter {
     // error 16s after the tap. The TCP keepalive (30s) eventually closes
     // the wedged socket, fast-failing both pending entries via the close
     // handler. In practice the recovery case is far more common.
+    const idStr = (x) => String(x);
+    const desired = new Set(pids.map(idStr));
+
+    // force:true callers (currently /api/play) skip the diff entirely. The
+    // diff trusts getGroups, which can lie in two ways we've seen on the Pi:
+    // (a) a slave silently dropped (mesh hiccup, sleep) while HEOS still
+    // reports the group intact; (b) the existing group has the right pids
+    // but wrong leader, so transferPlayback routes Spotify Connect audio to
+    // a slave's endpoint and HEOS doesn't mirror. Forcing setGroup heals both.
+    if (force) {
+      if (pids.length === 1) {
+        // Solo apply still benefits from skipping the getGroups round-trip;
+        // a force-solo just means "split this speaker out for sure."
+        return this.setGroup(pids);
+      }
+      return this.setGroup(pids);
+    }
+
     let groups;
     try {
       groups = await this.getGroups();
@@ -417,8 +447,6 @@ class HeosClient extends EventEmitter {
       if (pids.length === 1) return;
       return this.setGroup(pids);
     }
-    const idStr = (x) => String(x);
-    const desired = new Set(pids.map(idStr));
 
     const containing = groups.find((g) =>
       (g.players || []).some((p) => desired.has(idStr(p.pid)))
@@ -430,9 +458,17 @@ class HeosClient extends EventEmitter {
       return this.setGroup(pids);
     }
 
-    // Want a group. Compare desired pids against the currently-existing group.
-    const current = new Set((containing?.players || []).map((p) => idStr(p.pid)));
-    if (current.size === desired.size && [...desired].every((p) => current.has(p))) return;
+    // Want a group. Compare desired pids AND leader position against the
+    // currently-existing group. Leader position matters because HEOS routes
+    // Spotify Connect audio through the leader — if the existing group has
+    // the right pids but a different leader than what /api/play resolved
+    // (whoever Spotify currently sees), skipping setGroup leaves audio
+    // hitting a slave's Connect endpoint with no mirror.
+    const currentPlayers = (containing?.players || []).map((p) => idStr(p.pid));
+    const current = new Set(currentPlayers);
+    const sameSet = current.size === desired.size && [...desired].every((p) => current.has(p));
+    const sameLeader = currentPlayers[0] === idStr(pids[0]);
+    if (sameSet && sameLeader) return;
     try {
       return await this.setGroup(pids);
     } catch (e) {

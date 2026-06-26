@@ -370,7 +370,12 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
         }
       }
       const orderedPids = [leaderPid, ...pids.filter((p) => p !== leaderPid)];
-      await h.applyGroup(orderedPids);
+      // force:true — a redundant setGroup on the play tap is much cheaper
+      // (~150-300ms) than a silent half-broken playback when HEOS's group
+      // state matches our pid-set but has a different leader (Spotify
+      // Connect audio then routes to a slave's endpoint, no mirror). The
+      // toggle path keeps the diff optimization; only /api/play forces.
+      await h.applyGroup(orderedPids, { force: true });
 
       try {
         // transferPlayback with play=true on the wake path so Spotify wakes
