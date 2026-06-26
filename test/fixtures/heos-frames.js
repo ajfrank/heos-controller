@@ -54,6 +54,14 @@ export const FRAME = {
     heos: { command: 'group/set_group', result: 'fail', message: 'eid=13&text=Processing previous command' },
   }) + '\r\n',
 
+  // "Command couldn't be executed" — fired when the desired leader is
+  // currently a slave in another group (HEOS refuses to promote a slave
+  // straight to leader of a new group). _doApplyGroup catches and recovers
+  // by ungrouping the slave first, then retrying after a 1500ms settle.
+  setGroup_eid7: JSON.stringify({
+    heos: { command: 'group/set_group', result: 'fail', message: "eid=7&text=Command Couldn't Be Executed" },
+  }) + '\r\n',
+
   getVolume_42: JSON.stringify({
     heos: { command: 'player/get_volume', result: 'success', message: 'pid=1111&level=42' },
   }) + '\r\n',

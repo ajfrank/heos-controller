@@ -86,6 +86,32 @@ describe('initHeosState', () => {
     // Within grace, B should STILL be in state.players (held by the cache).
     expect(state.players.map((p) => p.pid).sort()).toEqual(['1', '2', '3']);
   });
+
+  // The other half of the grace-window contract: once the window expires, the
+  // onExpire callback wired in initHeosState must (a) drop the player from
+  // state.players AND (b) re-run resolveZones so any zone referring to that
+  // player loses the pid. Without this, a long outage leaves a phantom
+  // speaker in state forever and the UI keeps showing it as present.
+  // Real timers + a tiny grace window — fake timers fight with the hydration
+  // Promise.all's internal setTimeout awaits in fakeHeos.
+  it('on grace expiry: drops the player from state.players and re-resolves zones', async () => {
+    let eventHandler;
+    const heos = fakeHeos();
+    heos.on = vi.fn((evt, h) => { if (evt === 'event') eventHandler = h; });
+    heos.removeAllListeners = vi.fn();
+    const state = new State();
+    await initHeosState({ heos, state, log: { warn: () => {} }, playerCacheGraceMs: 50 });
+
+    // B vanishes via players_changed.
+    heos.getPlayers.mockResolvedValueOnce([{ pid: '1', name: 'A' }, { pid: '3', name: 'C' }]);
+    await eventHandler({ heos: { command: 'event/players_changed', message: '' } });
+    // Still in grace.
+    expect(state.players.map((p) => p.pid).sort()).toEqual(['1', '2', '3']);
+
+    // Wait past grace; onExpire fires, state.setPlayers re-runs without B.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(state.players.map((p) => p.pid).sort()).toEqual(['1', '3']);
+  });
 });
 
 describe('refreshDeviceCache', () => {

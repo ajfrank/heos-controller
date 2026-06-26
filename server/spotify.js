@@ -109,14 +109,34 @@ let inflightRefresh = null;
 const REFRESH_BACKOFF_MS = 30_000;
 let refreshFailedUntil = 0;
 
+// Refresh-error taxonomy: unrecoverable failures (refresh_token revoked, no
+// tokens at all) set the 30s backoff and translate to REAUTH_SENTINEL up the
+// stack — those need user action. Transient failures (network blip, 5xx, 429
+// on the token endpoint) propagate as plain errors so the next caller can
+// retry on its own; without this split, one bad DNS lookup locks the user
+// into a 30s "reconnect Spotify" banner for a wholly-recoverable problem.
+function refreshError(message, code) {
+  const e = new Error(message);
+  e.code = code;
+  return e;
+}
+
+// Codes treated as unrecoverable — set backoff AND surface as REAUTH.
+const UNRECOVERABLE_REFRESH_CODES = new Set([
+  'INVALID_GRANT',  // refresh_token revoked / no longer valid
+  'NOT_CONNECTED',  // no tokens.json on disk
+  'UNKNOWN',        // 4xx that isn't invalid_grant — likely client_id/secret mismatch
+  'REFRESH_BACKOFF', // already in the 30s window after a prior unrecoverable
+]);
+
 async function refresh() {
   if (refreshFailedUntil > Date.now()) {
-    throw new Error(REAUTH_SENTINEL);
+    throw refreshError('Spotify refresh in backoff window', 'REFRESH_BACKOFF');
   }
   if (inflightRefresh) return inflightRefresh;
   inflightRefresh = (async () => {
     const tokens = loadTokens();
-    if (!tokens?.refresh_token) throw new Error('Spotify not connected');
+    if (!tokens?.refresh_token) throw refreshError('Spotify not connected', 'NOT_CONNECTED');
     const clientId = process.env.SPOTIFY_CLIENT_ID;
     const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
     const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
@@ -124,15 +144,35 @@ async function refresh() {
       grant_type: 'refresh_token',
       refresh_token: tokens.refresh_token,
     });
-    const res = await fetch('https://accounts.spotify.com/api/token', {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body,
-    });
-    if (!res.ok) throw new Error(`Spotify refresh failed: ${res.status} ${await res.text()}`);
+    let res;
+    try {
+      res = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
+      });
+    } catch (netErr) {
+      // DNS / ECONNRESET / TCP timeout — pure network-layer failure. Caller
+      // retries on next request; no backoff, no banner.
+      throw refreshError(`Spotify refresh network error: ${netErr.message}`, 'NETWORK');
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      // Spotify follows RFC 6749 §5.2 — error responses are JSON with an
+      // `error` field. `invalid_grant` specifically means the refresh_token
+      // is dead and only user reauth can recover. Other 4xx are usually
+      // wrong client credentials (treat as unrecoverable so we don't loop).
+      let oauthError = null;
+      try { oauthError = JSON.parse(text)?.error || null; } catch { /* not JSON */ }
+      let code;
+      if (oauthError === 'invalid_grant') code = 'INVALID_GRANT';
+      else if (res.status === 429 || (res.status >= 500 && res.status < 600)) code = 'TRANSIENT';
+      else code = 'UNKNOWN';
+      throw refreshError(`Spotify refresh failed: ${res.status} ${text}`, code);
+    }
     const t = await res.json();
     saveTokens({
       access_token: t.access_token,
@@ -144,7 +184,9 @@ async function refresh() {
     await inflightRefresh;
     refreshFailedUntil = 0;
   } catch (e) {
-    refreshFailedUntil = Date.now() + REFRESH_BACKOFF_MS;
+    if (UNRECOVERABLE_REFRESH_CODES.has(e.code)) {
+      refreshFailedUntil = Date.now() + REFRESH_BACKOFF_MS;
+    }
     throw e;
   } finally {
     inflightRefresh = null;
@@ -167,7 +209,14 @@ async function accessToken() {
   if (!tokens) throw new Error('Spotify not connected — visit /api/spotify/login');
   if (Date.now() >= tokens.expires_at) {
     try { await refresh(); }
-    catch { throw new Error(REAUTH_SENTINEL); }
+    catch (e) {
+      // Unrecoverable refresh failures need user reauth — surface the sentinel
+      // so the UI flips its banner. Transient failures (network, 5xx, 429)
+      // propagate as-is so the user sees "Couldn't reach Spotify, try again"
+      // instead of an out-of-place "reconnect Spotify" prompt for a DNS blip.
+      if (UNRECOVERABLE_REFRESH_CODES.has(e.code)) throw new Error(REAUTH_SENTINEL);
+      throw e;
+    }
     tokens = loadTokens();
   }
   return tokens.access_token;

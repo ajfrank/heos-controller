@@ -7,6 +7,7 @@
 import net from 'node:net';
 import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
+import { StringDecoder } from 'node:string_decoder';
 
 const HEOS_PORT = 1255;
 const SSDP_ADDR = '239.255.255.250';
@@ -68,6 +69,11 @@ class HeosClient extends EventEmitter {
     this.host = null;
     this.socket = null;
     this.buffer = '';
+    // StringDecoder buffers partial multi-byte UTF-8 sequences across TCP
+    // chunks. Without it, chunk.toString('utf8') replaces the split bytes
+    // with U+FFFD, corrupting non-ASCII track titles (Björk, Sigur Rós,
+    // any CJK / Cyrillic / RTL music) into unparseable JSON.
+    this.decoder = new StringDecoder('utf8');
     // Pending non-event responses are matched in FIFO by command name.
     // HEOS guarantees in-order response on a single connection.
     this.pending = [];
@@ -123,6 +129,10 @@ class HeosClient extends EventEmitter {
           entry.cancelled = true;
           try { entry.reject(new Error('HEOS connection lost')); } catch {}
         }
+        // Reset the line buffer + decoder so any partial bytes from the dead
+        // socket don't bleed into the reconnect's first frame as garbage.
+        this.buffer = '';
+        this.decoder = new StringDecoder('utf8');
         this.emit('disconnected');
         this._scheduleReconnect();
       });
@@ -145,7 +155,7 @@ class HeosClient extends EventEmitter {
   }
 
   _onData(chunk) {
-    this.buffer += chunk.toString('utf8');
+    this.buffer += this.decoder.write(chunk);
     // M7: a malformed remote could feed us bytes without a newline forever.
     // 64KB is far above any legitimate HEOS frame; drop and resync if exceeded.
     if (this.buffer.length > 65536) {

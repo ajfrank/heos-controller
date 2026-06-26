@@ -337,4 +337,83 @@ describe('api() retry / reauth / error translation', () => {
     fetchMock.route('POST', 'accounts.spotify.com/api/token', { status: 400, body: 'invalid_grant' });
     await expect(spotify.getDevices()).rejects.toThrow(/SPOTIFY_REAUTH_REQUIRED/);
   });
+
+  // Refresh-error taxonomy: invalid_grant means the refresh_token is dead
+  // and only user reauth can recover. Surface REAUTH + arm the 30s backoff
+  // so a 5s playback poll loop doesn't burn 12 wasted refresh requests/min.
+  it('on refresh with OAuth invalid_grant: surfaces REAUTH and arms the 30s short-circuit', async () => {
+    seedTokens({ access_token: 'old', expires_at: Date.now() - 1000 });
+    let refreshCalls = 0;
+    fetchMock.route('POST', 'accounts.spotify.com/api/token', () => {
+      refreshCalls++;
+      return { status: 400, body: '{"error":"invalid_grant","error_description":"Refresh token revoked"}' };
+    });
+    fetchMock.route('GET', '/v1/me/player/devices', devicesFixture);
+
+    // First call: hits refresh, fails with invalid_grant → REAUTH.
+    await expect(spotify.getDevices()).rejects.toThrow(/SPOTIFY_REAUTH_REQUIRED/);
+    expect(refreshCalls).toBe(1);
+
+    // Second call (still within the 30s backoff window): must short-circuit
+    // — no second network call to /api/token. Without the short-circuit a
+    // tab polling /api/playback/position every 5s would re-attempt forever.
+    await expect(spotify.getDevices()).rejects.toThrow(/SPOTIFY_REAUTH_REQUIRED/);
+    expect(refreshCalls).toBe(1);
+  });
+
+  // Network blip during refresh is RECOVERABLE — the next request retries.
+  // Must NOT translate to REAUTH (no "reconnect Spotify" banner for a DNS
+  // blip) and must NOT arm the 30s backoff (next request gets a real
+  // attempt, not a stale short-circuit).
+  it('on refresh network failure: propagates a plain error and does NOT arm the short-circuit', async () => {
+    seedTokens({ access_token: 'old', expires_at: Date.now() - 1000 });
+    let refreshCalls = 0;
+    // First refresh: network error. Second: succeed.
+    vi.stubGlobal('fetch', vi.fn((url, init) => {
+      if (typeof url === 'string' && url.includes('accounts.spotify.com')) {
+        refreshCalls++;
+        if (refreshCalls === 1) return Promise.reject(new TypeError('fetch failed'));
+        return Promise.resolve(new Response(
+          JSON.stringify({ access_token: 'new', refresh_token: 'r2', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ));
+      }
+      // Pass /me/player/devices through to a stub response.
+      return Promise.resolve(new Response(
+        JSON.stringify({ devices: [{ id: 'd', name: 'X' }] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ));
+    }));
+
+    // First call: refresh's fetch rejects → NETWORK code → NOT translated to
+    // REAUTH. The plain error propagates so the caller can show "couldn't
+    // reach Spotify" instead of "reconnect Spotify".
+    await expect(spotify.getDevices()).rejects.not.toThrow(/SPOTIFY_REAUTH_REQUIRED/);
+    expect(refreshCalls).toBe(1);
+
+    // Second call: backoff was NOT armed (network is recoverable), so
+    // refresh actually runs again — and this time succeeds.
+    await spotify.getDevices();
+    expect(refreshCalls).toBe(2);
+  });
+
+  // 5xx during refresh is also recoverable (Spotify's auth endpoint hiccup).
+  it('on refresh 5xx: propagates plain error and does NOT arm the short-circuit', async () => {
+    seedTokens({ access_token: 'old', expires_at: Date.now() - 1000 });
+    let refreshCalls = 0;
+    fetchMock.route('POST', 'accounts.spotify.com/api/token', () => {
+      refreshCalls++;
+      // First call: 503. Second: success.
+      if (refreshCalls === 1) return { status: 503, body: 'auth backend down' };
+      return { access_token: 'new', refresh_token: 'r2', expires_in: 3600 };
+    });
+    fetchMock.route('GET', '/v1/me/player/devices', devicesFixture);
+
+    await expect(spotify.getDevices()).rejects.not.toThrow(/SPOTIFY_REAUTH_REQUIRED/);
+    expect(refreshCalls).toBe(1);
+
+    // Backoff NOT armed → next call attempts refresh again.
+    await spotify.getDevices();
+    expect(refreshCalls).toBe(2);
+  });
 });

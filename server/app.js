@@ -185,7 +185,7 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
   let zonesInflight = null;
   let zonesPending = null; // { zones, responses: [res, ...] }
   app.post('/api/zones/active', async (req, res) => {
-    const { zones } = req.body;
+    const { zones } = req.body || {};
     if (!Array.isArray(zones)) {
       return res.status(400).json({ error: 'zones must be an array of zone names' });
     }
@@ -263,7 +263,7 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
       for (const pid of pids) {
         if (typeof state.volumes[pid] === 'number') priorVolumes[pid] = state.volumes[pid];
       }
-      const { uri, label, sublabel, art, badge } = req.body;
+      const { uri, label, sublabel, art, badge } = req.body || {};
       if (!uri) return res.status(400).json({ error: 'uri required' });
       // Validate the URI shape before we hand it to Spotify. A malformed body
       // would otherwise surface as an opaque Spotify 4xx — easier to debug
@@ -668,7 +668,7 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
   });
 
   app.post('/api/control', async (req, res) => {
-    const { action, value } = req.body;
+    const { action, value } = req.body || {};
     try {
       // Shuffle/repeat go straight to Spotify — playback state lives there
       // when we're driving via Spotify Connect, and HEOS's set_play_mode
@@ -696,7 +696,7 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
   });
 
   app.post('/api/volume', async (req, res) => {
-    const { zone, level } = req.body;
+    const { zone, level } = req.body || {};
     // Reject NaN/Infinity/out-of-range — Math.round(NaN) stays NaN and lands
     // on HEOS's wire as `level=NaN`, which surfaces as an opaque protocol error.
     if (typeof level !== 'number' || !Number.isFinite(level) || level < 0 || level > 100) {

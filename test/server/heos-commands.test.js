@@ -318,6 +318,91 @@ describe('HeosClient.applyGroup', () => {
     warnSpy.mockRestore();
   });
 
+  // EID7 = "Command Couldn't Be Executed". Fires when the desired leader is
+  // currently a slave in another group — HEOS refuses to promote a slave
+  // straight to leader of a new group. _doApplyGroup catches and recovers by
+  // ungrouping the slave first, sleeping 1500ms, then retrying the setGroup.
+  // This is the exact scenario the force:true fix relies on (force always
+  // calls setGroup; EID7 is the resulting error when the leader isn't
+  // already promoted). Untested before this — silent regression risk for
+  // the most user-visible fix in the recent run.
+  it('on EID7 with leader-as-slave: ungroups the slave, waits, then retries setGroup successfully', async () => {
+    const { client, sock } = await connectedClient();
+    // Existing group has Living (2222) as leader, Kitchen (1111) as slave.
+    // We want Kitchen to lead → setGroup([1111, 2222]) → HEOS rejects with
+    // EID7 because 1111 is currently a slave.
+    const getGroupsFrame = JSON.stringify({
+      heos: { command: 'group/get_groups', result: 'success', message: '' },
+      payload: [
+        { name: 'Living Room + Kitchen', gid: 2222, players: [
+          { name: 'Living Room', pid: 2222, role: 'leader' },
+          { name: 'Kitchen', pid: 1111, role: 'member' },
+        ] },
+      ],
+    }) + '\r\n';
+    let setGroupIdx = 0;
+    sock.onWrite((line) => {
+      if (line.includes('group/get_groups')) return getGroupsFrame;
+      // setGroup write order during recovery:
+      //   [0] setGroup?pid=1111,2222  → EID7
+      //   [1] setGroup?pid=1111       → success (ungroup Kitchen to solo)
+      //   [2] setGroup?pid=1111,2222  → success (retry after 1500ms)
+      if (line.includes('group/set_group?pid=1111,2222')) {
+        const i = setGroupIdx++;
+        return i === 0 ? FRAME.setGroup_eid7 : FRAME.setGroup_success;
+      }
+      if (line.includes('group/set_group?pid=1111')) return FRAME.setGroup_success;
+      return null;
+    });
+
+    const p = client.applyGroup([1111, 2222]);
+    // Advance past the 1500ms settle so the retry fires.
+    await vi.advanceTimersByTimeAsync(1600);
+    await p;
+
+    // Wire sequence proves the recovery: initial setGroup, ungroup-leader,
+    // then retry. Without the EID7 branch, no ungroup write would appear.
+    const setGroupWrites = sock.written.filter((w) => w.includes('group/set_group'));
+    expect(setGroupWrites[0]).toContain('pid=1111,2222');
+    expect(setGroupWrites[1]).toContain('pid=1111\r\n'); // ungroup Kitchen
+    expect(setGroupWrites[2]).toContain('pid=1111,2222'); // retry
+    expect(setGroupWrites.length).toBe(3);
+  });
+
+  // Skip the ungroup step when the desired leader is already solo (not in a
+  // multi-player group). EID7 still triggers a retry, but no ungroup is sent.
+  it('on EID7 when leader is already solo: skips ungroup, just sleeps and retries', async () => {
+    const { client, sock } = await connectedClient();
+    // Existing group is Living+Bar (2222+3333); Kitchen (1111) is NOT in it.
+    const getGroupsFrame = JSON.stringify({
+      heos: { command: 'group/get_groups', result: 'success', message: '' },
+      payload: [
+        { gid: 2222, players: [
+          { name: 'Living Room', pid: 2222, role: 'leader' },
+          { name: 'Bar', pid: 3333, role: 'member' },
+        ] },
+      ],
+    }) + '\r\n';
+    let setGroupIdx = 0;
+    sock.onWrite((line) => {
+      if (line.includes('group/get_groups')) return getGroupsFrame;
+      if (line.includes('group/set_group?pid=1111,2222')) {
+        const i = setGroupIdx++;
+        return i === 0 ? FRAME.setGroup_eid7 : FRAME.setGroup_success;
+      }
+      return null;
+    });
+
+    const p = client.applyGroup([1111, 2222]);
+    await vi.advanceTimersByTimeAsync(1600);
+    await p;
+
+    const allSetGroups = sock.written.filter((w) => w.includes('group/set_group'));
+    // No solo-ungroup of Kitchen — it wasn't in a multi-player group.
+    expect(allSetGroups.every((w) => w.includes('pid=1111,2222'))).toBe(true);
+    expect(allSetGroups.length).toBe(2); // initial fail + retry success
+  });
+
   it('coalesces concurrent applyGroup calls — only the latest pids run after the in-flight one finishes', async () => {
     // Regression: HEOS rejects overlapping group/set_group with eid=13.
     // applyGroup must serialize: at most one in flight, queue collapses to

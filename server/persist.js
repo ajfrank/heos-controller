@@ -12,6 +12,29 @@ import crypto from 'node:crypto';
 
 const DATA_DIR = path.join(os.homedir(), '.heos-controller');
 
+// Sweep stale .tmp files left behind by SIGKILL / power-loss between writeFileSync(tmp)
+// and renameSync below. Without this, on a Pi these accumulate forever and bloat
+// ~/.heos-controller/ over months. 1h is well past any legitimate atomic-rename window
+// (writes are sync + small), so anything older is unrecoverable garbage. Best-effort:
+// any error (missing dir, permission, race with another writer) is swallowed — sweeping
+// is a hygiene chore, not a correctness requirement.
+function sweepStaleTmpFiles() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) return;
+    const now = Date.now();
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    for (const name of fs.readdirSync(DATA_DIR)) {
+      if (!name.endsWith('.tmp')) continue;
+      try {
+        const full = path.join(DATA_DIR, name);
+        const stat = fs.statSync(full);
+        if (now - stat.mtimeMs > ONE_HOUR_MS) fs.unlinkSync(full);
+      } catch { /* file disappeared / permission — fine */ }
+    }
+  } catch { /* dir gone — fine */ }
+}
+sweepStaleTmpFiles();
+
 export function readJson(name, fallback) {
   try {
     return JSON.parse(fs.readFileSync(path.join(DATA_DIR, name), 'utf8'));

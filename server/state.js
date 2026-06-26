@@ -101,6 +101,13 @@ class State extends EventEmitter {
   }
 
   setVolume(pid, level) {
+    // NaN slips past the early-return because NaN !== NaN, so without this
+    // guard a single bad write would re-emit a 'change' on every subsequent
+    // call AND leave NaN in this.volumes (poisons master-volume averaging,
+    // /api/state snapshots, and the WS broadcast). Route handlers validate
+    // /api/volume input, but HEOS event frames or hydrate-time getVolume
+    // failures can still produce NaN if the upstream parser glitches.
+    if (!Number.isFinite(level)) return;
     if (this.volumes[pid] === level) return;
     this.volumes[pid] = level;
     this.emit('change', { type: 'volume', pid, level });

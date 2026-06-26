@@ -11,7 +11,14 @@ import Banner from './components/Banner.jsx';
 import QuickPicks from './components/QuickPicks.jsx';
 
 const SOURCE_KEY = 'heos.source';
-if (localStorage.getItem(SOURCE_KEY)) localStorage.removeItem(SOURCE_KEY);
+// Wrapped because localStorage throws in Safari Private Mode (pre-iOS17),
+// embedded WebViews with storage disabled, and any test environment that
+// runs this module before a jsdom shim is installed. An unguarded throw at
+// module-eval time prevents the entire app from rendering — a much louder
+// failure than the stale-key cleanup is worth.
+try {
+  if (localStorage.getItem(SOURCE_KEY)) localStorage.removeItem(SOURCE_KEY);
+} catch { /* storage unavailable */ }
 
 const sectionCardClasses = {
   base: 'bg-content1/70 backdrop-blur-xl border border-white/10',

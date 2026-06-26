@@ -47,6 +47,12 @@ export default function QuickPicks({ recents = [], frequent = [], onPlay }) {
     const next = pins.filter((p) => p.uri !== uri);
     savePins(next);
     setPins(next);
+    // Notify App.jsx's usePinsCount hook so the Quick Picks section visibility
+    // updates immediately. The `storage` event doesn't fire in the same tab
+    // that wrote the change, so without this dispatch the section can linger
+    // with stale visibility (empty row, or hidden when items are removed
+    // and the count drops to 0) until the next reload.
+    window.dispatchEvent(new CustomEvent('heos:pins-changed'));
   }
 
   function removeRecent(uri) {

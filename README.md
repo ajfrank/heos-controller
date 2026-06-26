@@ -79,17 +79,23 @@ In order, expect each of these to succeed:
 
 ```
 server/
-  index.js     — Express + WebSocket entry, REST API, Spotify OAuth callback
-  heos.js      — HEOS CLI client (SSDP discovery + TCP protocol)
-  spotify.js   — Spotify Web API + token storage
-  state.js     — Shared in-memory state with change events
+  index.js          — bootstrap: HEOS discovery, Express + WebSocket entry
+  app.js            — REST API, Spotify OAuth callback, /api/play orchestration
+  heos.js           — HEOS CLI client (SSDP discovery + TCP protocol + FIFO)
+  spotify.js        — Spotify Web API + token storage + refresh-error taxonomy
+  state.js          — Shared in-memory state with change events
+  zones.js          — Static zones config loader + resolve-against-players
+  zones.json        — Zone → speaker-name mapping (edit to re-cluster)
+  player-cache.js   — Grace-window cache that smooths transient HEOS dropouts
+  persist.js        — Atomic JSON-on-disk store for recents, device cache, tokens
+  wake.js           — Spotify Connect wake helpers
 web/
   index.html
   vite.config.js
-  tailwind.config.js, postcss.config.js
+  tailwind.config.cjs, postcss.config.cjs
   src/
-    App.jsx, main.jsx, api.js, index.css
-    components/{NowPlaying,ZoneGrid,SearchResults,Backdrop}.jsx
+    App.jsx, main.jsx, api.js, reducer.js, index.css
+    components/{NowPlaying,ZoneGrid,SearchResults,Backdrop,Banner,QuickPicks}.jsx
 ```
 
 ## Always-on hosting on a Raspberry Pi

@@ -103,7 +103,14 @@ export function connectWS(onMessage) {
     if (cancelled) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     socket = new WebSocket(`${proto}//${location.host}/ws`);
-    socket.onopen = () => { attempt = 0; };
+    socket.onopen = () => {
+      // Re-check cancellation: a fast unmount-then-remount (React 18 StrictMode
+      // in dev, HMR in prod) can fire close() after `new WebSocket(...)` but
+      // before `onopen`. Without this guard we'd leak an orphan open socket
+      // that the cleanup never sees.
+      if (cancelled) { try { socket?.close(); } catch {} return; }
+      attempt = 0;
+    };
     socket.onmessage = (ev) => {
       if (cancelled) return;
       try { onMessage(JSON.parse(ev.data)); } catch {}
