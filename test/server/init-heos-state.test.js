@@ -64,6 +64,28 @@ describe('initHeosState', () => {
     // The other two players still hydrated.
     expect(Object.keys(state.volumes).length).toBeGreaterThanOrEqual(2);
   });
+
+  // Grace-window cache: a transient HEOS dropout should NOT immediately drop
+  // the player from state.players. Covers the Jun 26 17:32:02 Pi incident
+  // where Deck briefly fell off player/get_players and Porch silently shrank
+  // to a 1-speaker zone mid-song.
+  it('keeps a vanished player in state.players for the grace window after a players_changed dropout', async () => {
+    // Capture the event handler so we can fire players_changed manually.
+    let eventHandler;
+    const heos = fakeHeos();
+    heos.on = vi.fn((evt, h) => { if (evt === 'event') eventHandler = h; });
+    heos.removeAllListeners = vi.fn();
+    const state = new State();
+    await initHeosState({ heos, state, log: { warn: () => {} }, playerCacheGraceMs: 30_000 });
+    expect(state.players.map((p) => p.pid).sort()).toEqual(['1', '2', '3']);
+
+    // Simulate HEOS reporting only 2 of the 3 players (B vanished).
+    heos.getPlayers.mockResolvedValueOnce([{ pid: '1', name: 'A' }, { pid: '3', name: 'C' }]);
+    await eventHandler({ heos: { command: 'event/players_changed', message: '' } });
+
+    // Within grace, B should STILL be in state.players (held by the cache).
+    expect(state.players.map((p) => p.pid).sort()).toEqual(['1', '2', '3']);
+  });
 });
 
 describe('refreshDeviceCache', () => {

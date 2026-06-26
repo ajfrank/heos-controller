@@ -82,6 +82,20 @@ export default function ZoneGrid({ zones, activeZones, volumes, nowPlayingByPid 
                 >
                   <span className="flex-1 min-w-0 flex flex-col gap-0.5">
                     <span className="font-semibold text-base truncate">{z.name}</span>
+                    {z.missing && z.missing.length > 0 && (
+                      // Server returns the names of configured-but-not-found
+                      // speakers in this zone. Surface them so the user knows
+                      // why a 2-speaker zone only plays in one room — without
+                      // this they'd see silent shrinkage and assume the app
+                      // is broken. text-warning matches HeroUI's semantic
+                      // amber, same family as the active-state primary.
+                      <span
+                        className="text-tiny text-warning truncate"
+                        title={`Offline: ${z.missing.join(', ')}`}
+                      >
+                        {z.missing.length === 1 ? `${z.missing[0]} offline` : `${z.missing.join(', ')} offline`}
+                      </span>
+                    )}
                     {npLine && (
                       <span
                         className="text-tiny text-default-500 truncate"

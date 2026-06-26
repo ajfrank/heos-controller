@@ -41,9 +41,11 @@ function loadConfig() {
 }
 
 // Resolve the zones config against the current HEOS player list. Speaker name
-// match is case-insensitive + trimmed. Returns [{ name, pids }, ...] in config
-// order. Zones whose speakers don't resolve to any known pid are omitted (and
-// the missing speakers logged) so the UI never shows a phantom zone.
+// match is case-insensitive + trimmed. Returns [{ name, pids, missing }, ...]
+// in config order. `missing` lists configured-but-not-found speaker names so
+// the UI can surface "Deck offline" instead of silently shrinking the zone
+// when a speaker drops off the HEOS mesh. Zones whose speakers ALL fail to
+// resolve are omitted entirely (no pids = no possible audio path).
 export function resolveZones(players, log = console) {
   const cfg = loadConfig();
   const byName = new Map(
@@ -61,7 +63,7 @@ export function resolveZones(players, log = console) {
     if (missing.length) {
       log.warn?.(`[zones] ${z.name}: speaker(s) not found in HEOS — ${missing.join(', ')}`);
     }
-    if (pids.length) out.push({ name: z.name, pids });
+    if (pids.length) out.push({ name: z.name, pids, missing });
   }
   return out;
 }

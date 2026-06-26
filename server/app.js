@@ -8,6 +8,7 @@ import { readJson, writeJson } from './persist.js';
 import { findMatchingDevice } from './wake.js';
 import { REAUTH_SENTINEL } from './spotify.js';
 import { resolveZones } from './zones.js';
+import { createPlayerCache } from './player-cache.js';
 
 // Centralized error → response translation for routes that touch Spotify.
 // REAUTH_SENTINEL → 401 + code:'reauth' so the UI can flip the banner without
@@ -934,15 +935,30 @@ export async function refreshDeviceCache({
 
 // Hydrate state from a freshly-connected HEOS client and subscribe to its events.
 // Used by the bootstrap; pulled out so tests can drive it with a fake heos.
-export async function initHeosState({ heos, state, log = console }) {
+export async function initHeosState({ heos, state, log = console, playerCacheGraceMs = 30_000 }) {
+  // Grace-window cache: HEOS occasionally reports a speaker missing for a few
+  // seconds and then it's back. Without smoothing, those blips silently shrink
+  // the user's zone (e.g. Porch suddenly becomes a 1-speaker zone mid-song).
+  // The cache also fires onExpire(pid) for survivors that don't return within
+  // the grace window — that's where we drop them from state and re-resolve.
+  const playerCache = createPlayerCache({
+    graceMs: playerCacheGraceMs,
+    onExpire: (pid) => {
+      const next = state.players.filter((p) => String(p.pid) !== pid);
+      state.setPlayers(next);
+      state.setZones(resolveZones(next, log));
+    },
+  });
   const players = await heos.getPlayers();
   // Normalize pid to string at the boundary. HEOS JSON delivers pids as
   // numbers; activePids/event-handler pids are strings (URLSearchParams /
   // setActive's stringify). Mixing types breaks `===` comparisons
   // (e.g. ZoneGrid's activePids.includes(p.pid)) and the leader-broadcast
   // guard in setNowPlaying. Normalize once here so downstream can assume strings.
-  state.setPlayers(players.map((p) => ({ pid: String(p.pid), name: p.name, model: p.model, ip: p.ip })));
-  state.setZones(resolveZones(state.players, log));
+  const normalized = players.map((p) => ({ pid: String(p.pid), name: p.name, model: p.model, ip: p.ip }));
+  const effective = playerCache.apply(normalized);
+  state.setPlayers(effective);
+  state.setZones(resolveZones(effective, log));
   // Hydrate per-player metadata in parallel; HEOS happily handles concurrent
   // requests on a single connection, and serial round-trips were the slowest
   // part of bootstrap on a 4-zone setup.
@@ -961,10 +977,10 @@ export async function initHeosState({ heos, state, log = console }) {
       log.warn?.(`[heos] hydrate ${p.pid} failed:`, e.message);
     }
   }));
-  wireHeosEvents({ heos, state, log });
+  wireHeosEvents({ heos, state, log, playerCache });
 }
 
-export function wireHeosEvents({ heos, state, log = console }) {
+export function wireHeosEvents({ heos, state, log = console, playerCache }) {
   // Idempotent: drop any prior 'event' listener so a re-subscribe (e.g. an
   // initHeosState retry after a partial-success failure) can't stack handlers
   // that all fire on every HEOS event. Today only one wireHeosEvents call
@@ -979,8 +995,13 @@ export function wireHeosEvents({ heos, state, log = console }) {
     try {
       if (cmd === 'event/players_changed') {
         const players = await heos.getPlayers();
-        state.setPlayers(players.map((p) => ({ pid: String(p.pid), name: p.name, model: p.model, ip: p.ip })));
-        state.setZones(resolveZones(state.players, log));
+        const normalized = players.map((p) => ({ pid: String(p.pid), name: p.name, model: p.model, ip: p.ip }));
+        // Route through the grace-window cache so a brief dropout doesn't
+        // silently shrink the user's zone. Falls back to plain normalize if
+        // the cache wasn't wired (older callers / tests).
+        const effective = playerCache ? playerCache.apply(normalized) : normalized;
+        state.setPlayers(effective);
+        state.setZones(resolveZones(effective, log));
       } else if (cmd === 'event/player_now_playing_changed' && params.pid) {
         // Fetch play state alongside the new media so the play/pause button
         // doesn't flash to "Play" between this event and the next state event.
