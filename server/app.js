@@ -7,8 +7,9 @@ import crypto from 'node:crypto';
 import { readJson, writeJson } from './persist.js';
 import { findMatchingDevice } from './wake.js';
 import { REAUTH_SENTINEL } from './spotify.js';
-import { resolveZones } from './zones.js';
+import { resolveZones, getAvrSpeakers } from './zones.js';
 import { createPlayerCache } from './player-cache.js';
+import * as denonAvr from './denon-avr.js';
 
 // Centralized error → response translation for routes that touch Spotify.
 // REAUTH_SENTINEL → 401 + code:'reauth' so the UI can flip the banner without
@@ -78,7 +79,7 @@ const DEVICE_CACHE_FILE = 'spotify-devices.json';
 // embedded user paths). Keeps /api/play from forwarding garbage upstream.
 const SPOTIFY_URI_RE = /^spotify:(track|album|playlist|artist|episode|show):[A-Za-z0-9]+$/;
 
-export function createApp({ heos, spotify, state, persist = { read: readJson, write: writeJson } }) {
+export function createApp({ heos, spotify, state, avr = denonAvr, persist = { read: readJson, write: writeJson } }) {
   // Allow `heos` to be passed as either an instance or a getter, so the bootstrap
   // can swap in the real client after async discovery without holding up listen().
   const getH = typeof heos === 'function' ? heos : () => heos;
@@ -121,8 +122,12 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
 
   // Readiness: routes that need a HEOS client return 503 until the bootstrap calls
   // app.locals.setHeosReady(). /api/state and OAuth don't touch heos so they pass through.
+  // setHeosNotReady flips back on socket disconnect so /api/play can't fire into
+  // a dead socket during the 5s reconnect window and surface a raw
+  // "HEOS not connected" — the bootstrap re-sets ready when the client reconnects.
   let heosReady = false;
   app.locals.setHeosReady = () => { heosReady = true; };
+  app.locals.setHeosNotReady = () => { heosReady = false; };
   const READY_EXEMPT = new Set(['/api/state', '/api/spotify/login', '/api/spotify/callback', '/api/spotify/debug']);
   app.use('/api', (req, res, next) => {
     // Inside an app.use('/api', ...) middleware, req.path is mount-relative
@@ -370,50 +375,53 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
           priorGroupPids = (containing.players || []).map((p) => String(p.pid));
         }
       }
-      const orderedPids = [leaderPid, ...pids.filter((p) => p !== leaderPid)];
-      // force:true — a redundant setGroup on the play tap is much cheaper
+      // For tracks: play inside the album context with offset, so Spotify's
+      // account-level Autoplay extends with similar songs after the album
+      // ends. Bare `uris: [track]` plays the one track and stops. If the
+      // album lookup fails (deleted track, network blip), fall back to the
+      // bare URI so the tap still plays something. Resolved once up front so
+      // the stale-cache recovery path below reuses the same args on retry.
+      let playArgs;
+      if (uri.includes(':track:')) {
+        let albumUri = null;
+        try {
+          const trackId = uri.split(':').pop();
+          const track = await spotify.getTrack(trackId);
+          albumUri = track?.album?.uri || null;
+        } catch (e) {
+          console.warn('[spotify] album lookup failed, falling back to single-track play:', e.message);
+        }
+        playArgs = albumUri ? { contextUri: albumUri, offsetUri: uri } : { uris: [uri] };
+      } else {
+        playArgs = { contextUri: uri };
+      }
+
+      // One end-to-end play attempt: group with this leader in front, transfer
+      // Spotify Connect to it, restore pre-tap volumes, then start the URI.
+      // Factored out so the stale-cache recovery path below can retry with a
+      // freshly-resolved leader/device_id without duplicating the sequence.
+      // force:true on applyGroup — a redundant setGroup is much cheaper
       // (~150-300ms) than a silent half-broken playback when HEOS's group
       // state matches our pid-set but has a different leader (Spotify
-      // Connect audio then routes to a slave's endpoint, no mirror). The
-      // toggle path keeps the diff optimization; only /api/play forces.
-      await h.applyGroup(orderedPids, { force: true });
-
-      try {
+      // Connect audio then routes to a slave's endpoint, no mirror).
+      const attemptPlay = async (attemptLeaderPid, attemptDeviceId, isWake) => {
+        const attemptOrdered = [attemptLeaderPid, ...pids.filter((p) => p !== attemptLeaderPid)];
+        await h.applyGroup(attemptOrdered, { force: true });
         // transferPlayback with play=true on the wake path so Spotify wakes
         // the Connect daemon AND starts playback in one round trip. On the
         // live path we keep play=false and follow with an explicit play()
         // so the URI is honored (transfer alone resumes the previous queue).
-        const wakePath = via === 'spotify-connect-wake';
         try {
-          await spotify.transferPlayback(resolvedDeviceId, wakePath);
+          await spotify.transferPlayback(attemptDeviceId, isWake);
         } catch (transferErr) {
           // Idle Connect daemons sometimes need a second poke. The first
           // transfer kicks the daemon awake; the second succeeds. Skip the
           // retry on "Device not found" — that's the cache-prune signal that
           // the device id is genuinely stale, not a transient wake-up race.
           const isStale = /not found|NO_ACTIVE_DEVICE|Device not found/i.test(transferErr.message);
-          if (!wakePath || isStale) throw transferErr;
+          if (!isWake || isStale) throw transferErr;
           await new Promise((r) => setTimeout(r, 1000));
-          await spotify.transferPlayback(resolvedDeviceId, wakePath);
-        }
-        // For tracks: play inside the album context with offset, so Spotify's
-        // account-level Autoplay extends with similar songs after the album
-        // ends. Bare `uris: [track]` plays the one track and stops. If the
-        // album lookup fails (deleted track, network blip), fall back to the
-        // bare URI so the tap still plays something.
-        let playArgs;
-        if (uri.includes(':track:')) {
-          let albumUri = null;
-          try {
-            const trackId = uri.split(':').pop();
-            const track = await spotify.getTrack(trackId);
-            albumUri = track?.album?.uri || null;
-          } catch (e) {
-            console.warn('[spotify] album lookup failed, falling back to single-track play:', e.message);
-          }
-          playArgs = albumUri ? { contextUri: albumUri, offsetUri: uri } : { uris: [uri] };
-        } else {
-          playArgs = { contextUri: uri };
+          await spotify.transferPlayback(attemptDeviceId, isWake);
         }
         // Pre-emptive volume restore. By this point HEOS has likely reset
         // the leader's volume on the Connect wake (transferPlayback above).
@@ -433,45 +441,78 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
             }
           }),
         );
-        await spotify.play(resolvedDeviceId, playArgs);
+        await spotify.play(attemptDeviceId, playArgs);
+      };
+
+      try {
+        await attemptPlay(leaderPid, resolvedDeviceId, via === 'spotify-connect-wake');
       } catch (playErr) {
-        // If the cached deviceId is stale (speaker reset, account changed),
-        // Spotify returns 404 "Device not found". Drop that entry so we don't
-        // keep retrying it on every play tap.
+        // Stale cache path: the cached device_id is dead (speaker rebooted,
+        // Spotify account re-linked, hardware swap). Prune it, then try a
+        // fresh getDevices() — the target speaker may now be reachable under
+        // a new id, OR another speaker in the group may be visible and can
+        // serve as leader. If we find a live match, retry the whole attempt
+        // as the live path so the user's tap succeeds without a second try.
         const stale = via === 'spotify-connect-wake' &&
           /not found|NO_ACTIVE_DEVICE|Device not found/i.test(playErr.message);
+        let recovered = false;
         if (stale) {
-          const next = { ...deviceCache };
-          delete next[leaderPid];
-          try { persist.write(DEVICE_CACHE_FILE, next); }
+          const pruned = { ...deviceCache };
+          delete pruned[leaderPid];
+          try { persist.write(DEVICE_CACHE_FILE, pruned); }
           catch (e) { console.warn('[heos] device cache persist failed:', e.message); }
+          // Sync the local cache view so the success-path write below picks
+          // the fresh mapping instead of resurrecting the stale entry.
+          delete deviceCache[leaderPid];
+
+          let freshDevices = [];
+          try { freshDevices = await spotify.getDevices(); }
+          catch { /* empty list falls through to no-match rollback */ }
+          const freshMatch = findMatchingDevice(freshDevices, pids, state.players);
+          if (freshMatch?.device?.id) {
+            try {
+              await attemptPlay(freshMatch.leaderPid, freshMatch.device.id, false);
+              // Recovery succeeded — commit the fresh identity so the success
+              // block writes the cache with the correct mapping and the WS
+              // response reports the live path.
+              resolvedDeviceId = freshMatch.device.id;
+              resolvedDeviceName = freshMatch.device.name;
+              leaderPid = freshMatch.leaderPid;
+              via = 'spotify-connect-live';
+              recovered = true;
+            } catch (retryErr) {
+              console.warn('[heos] stale-cache recovery failed:', retryErr.message);
+            }
+          }
         }
-        // Restore the prior group; if there wasn't one, ungroup the leader so
-        // the user can pick zones cleanly without stale speakers attached.
-        let rollbackOk = true;
-        try {
-          if (priorGroupPids?.length) await h.applyGroup(priorGroupPids);
-          else await h.applyGroup([leaderPid]);
-        } catch (rollbackErr) {
-          rollbackOk = false;
-          // The HEOS group state is now ambiguous — original mutation succeeded,
-          // playback failed, AND we couldn't restore the prior group. Force a
-          // fresh snapshot to all WS clients so the UI doesn't strand showing
-          // a group that doesn't exist on the speakers.
-          console.warn('[heos] rollback applyGroup failed:', rollbackErr.message);
-          state.emit('snapshot');
+
+        if (!recovered) {
+          // Restore the prior group; if there wasn't one, ungroup the leader so
+          // the user can pick zones cleanly without stale speakers attached.
+          let rollbackOk = true;
+          try {
+            if (priorGroupPids?.length) await h.applyGroup(priorGroupPids);
+            else await h.applyGroup([leaderPid]);
+          } catch (rollbackErr) {
+            rollbackOk = false;
+            // The HEOS group state is now ambiguous — original mutation succeeded,
+            // playback failed, AND we couldn't restore the prior group. Force a
+            // fresh snapshot to all WS clients so the UI doesn't strand showing
+            // a group that doesn't exist on the speakers.
+            console.warn('[heos] rollback applyGroup failed:', rollbackErr.message);
+            state.emit('snapshot');
+          }
+          // A stale wake with no recovery is the user's "speaker is asleep"
+          // path — surface the same actionable 404 the no-leader branch
+          // returns instead of an opaque 500.
+          if (stale) return res.status(404).json({ error: noLeaderMessage() });
+          if (!rollbackOk) {
+            // Distinct code so the client can decide to refetch / show a louder
+            // toast, instead of treating it like an ordinary play failure.
+            return res.status(500).json({ error: playErr.message, code: 'state_dirty' });
+          }
+          throw playErr;
         }
-        // A stale wake is the user's "speaker is asleep" path — surface the
-        // same actionable 404 the no-leader branch returns instead of an
-        // opaque 500. Without this, the first tap looks like a server crash;
-        // only the second tap (after the cache is pruned) shows the toast.
-        if (stale) return res.status(404).json({ error: noLeaderMessage() });
-        if (!rollbackOk) {
-          // Distinct code so the client can decide to refetch / show a louder
-          // toast, instead of treating it like an ordinary play failure.
-          return res.status(500).json({ error: playErr.message, code: 'state_dirty' });
-        }
-        throw playErr;
       }
 
       // Cache the deviceId for this pid so future "speaker is asleep" cases
@@ -515,6 +556,26 @@ export function createApp({ heos, spotify, state, persist = { read: readJson, wr
         }
       }
       res.json({ ok: true, via, device: resolvedDeviceName, device_id: resolvedDeviceId });
+
+      // Denon AVR nudge. HEOS-enabled Denon/Marantz receivers sometimes wake
+      // to Zone 2 when they receive Spotify Connect audio, leaving the Main
+      // Zone speaker terminals silent. The HEOS CLI has no zone-select
+      // primitive; the classic Denon control protocol on port 23 does (ZMON
+      // = Main Zone On). Fire best-effort in the background for every active
+      // pid whose speaker is configured as an AVR in zones.json, using the
+      // IP the HEOS discovery already handed us. Errors logged, never
+      // surfaced — this is a corrective nudge on top of a successful play.
+      const avrNames = getAvrSpeakers();
+      if (avrNames.size) {
+        for (const pid of pids) {
+          const player = state.players.find((p) => String(p.pid) === String(pid));
+          if (!player?.ip) continue;
+          if (!avrNames.has((player.name || '').trim().toLowerCase())) continue;
+          Promise.resolve(avr.sendCommand(player.ip, 'ZMON')).catch((e) => {
+            console.warn(`[avr] ZMON to ${player.name} (${player.ip}) failed:`, e.message);
+          });
+        }
+      }
 
       // Background volume restore. HEOS resets the leader's volume on Spotify
       // Connect wake (~80 default) — re-apply the pre-tap snapshot so the wife

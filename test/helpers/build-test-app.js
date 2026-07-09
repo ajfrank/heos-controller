@@ -50,9 +50,13 @@ export function buildTestApp(overrides = {}) {
     read: (name, fallback) => (name in store ? store[name] : fallback),
     write: (name, value) => { store[name] = value; },
   };
-  const app = createApp({ heos, spotify, state, persist });
+  // Stub out the Denon AVR control-protocol client so tests never hit port 23.
+  // Tests that need to assert on the ZMON nudge pass their own mock via
+  // overrides.avr; the default no-op keeps every other test unaware of it.
+  const avr = { sendCommand: vi.fn().mockResolvedValue(undefined), ...overrides.avr };
+  const app = createApp({ heos, spotify, state, avr, persist });
   // Most tests run as if the bootstrap finished. Tests that exercise the
   // readiness gate explicitly pass { ready: false }.
   if (overrides.ready !== false) app.locals.setHeosReady();
-  return { app, heos, spotify, state, persist, store };
+  return { app, heos, spotify, state, avr, persist, store };
 }

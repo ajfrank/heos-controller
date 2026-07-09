@@ -55,11 +55,22 @@ function startDeviceCachePoll() {
 // server alive (so /healthz still reports 503 to any external monitor) and
 // reconnects unattended once the speakers are reachable.
 let heosInitAttempt = 0;
+let heosEventsWired = false;
 async function initHeos() {
   heosInitAttempt += 1;
   heosClient = await getHeos();
   await initHeosState({ heos: heosClient, state });
   app.locals.setHeosReady();
+  // Track connection lifecycle so /api/play returns a friendly 503 instead of
+  // a raw "HEOS not connected" during the 5s reconnect window after a socket
+  // drop. HeosClient re-subscribes to change events on its own; we just need
+  // to flip the readiness flag in sync. Wired once — the singleton client
+  // outlives initHeos and re-runs of initHeos would stack listeners.
+  if (!heosEventsWired) {
+    heosClient.on('disconnected', () => app.locals.setHeosNotReady?.());
+    heosClient.on('connected', () => app.locals.setHeosReady());
+    heosEventsWired = true;
+  }
   startDeviceCachePoll();
   heosInitAttempt = 0;
 }

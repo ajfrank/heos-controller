@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let cached = null;
+let cachedAvrSpeakers = null;
 function loadConfig() {
   if (cached) return cached;
   const file = path.join(__dirname, 'zones.json');
@@ -29,6 +30,16 @@ function loadConfig() {
       name: String(z.name),
       speakers: (z.speakers || []).map(String),
     }));
+    // Optional: speaker names that are Denon/Marantz AVRs. The play handler
+    // fires ZMON at these hosts (IP auto-derived from state.players[i].ip)
+    // after a successful play so the AVR routes HEOS audio to Main Zone
+    // instead of defaulting to Zone 2. Case-insensitive + trimmed match
+    // against the HEOS player name, same as the speakers[] resolver above.
+    cachedAvrSpeakers = new Set(
+      (Array.isArray(parsed.avrSpeakers) ? parsed.avrSpeakers : [])
+        .map((s) => String(s).trim().toLowerCase())
+        .filter(Boolean),
+    );
   } catch (e) {
     console.warn(
       `[zones] zones.json unreadable (${e.message}) — booting with no zones; ` +
@@ -36,8 +47,19 @@ function loadConfig() {
         'cd ~/heos-controller && git checkout server/zones.json',
     );
     cached = [];
+    cachedAvrSpeakers = new Set();
   }
   return cached;
+}
+
+/**
+ * @returns {Set<string>} lowercased/trimmed HEOS player names configured as
+ * Denon AVRs. Empty set when none are configured — callers should short-circuit
+ * (no AVR ping) rather than iterate.
+ */
+export function getAvrSpeakers() {
+  if (cachedAvrSpeakers === null) loadConfig();
+  return cachedAvrSpeakers;
 }
 
 // Resolve the zones config against the current HEOS player list. Speaker name
@@ -84,4 +106,4 @@ export function pidsForZones(zones, activeZoneNames) {
 }
 
 // For tests: clear the cached zones.json so a fresh require picks up edits.
-export function _resetZonesCache() { cached = null; }
+export function _resetZonesCache() { cached = null; cachedAvrSpeakers = null; }

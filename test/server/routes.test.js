@@ -419,6 +419,89 @@ describe('POST /api/play', () => {
     expect(store['spotify-devices.json']).toEqual({});
   });
 
+  it('recovers a stale-cache wake failure by re-resolving via a fresh getDevices and retrying', async () => {
+    // The wake path uses a cached pid→device_id map. Speaker reboots + Spotify
+    // re-registration change the id under us, so the cached one 404s. Without
+    // recovery, every such tap forced a second attempt from the user. This
+    // test guards the "prune stale entry, ask Spotify again, retry as live"
+    // path — the fresh id should be persisted so future taps skip the dance.
+    const { app, state, spotify, store } = buildTestApp({
+      spotify: {
+        transferPlayback: vi.fn()
+          .mockRejectedValueOnce(new Error('Spotify API failed: 404 Device not found'))
+          .mockResolvedValue(undefined),
+        getDevices: vi.fn()
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([{ id: 'd-fresh', name: 'Bar' }]),
+      },
+    });
+    store['spotify-devices.json'] = { '1': 'd-stale' };
+    seed(state, [{ pid: '1', name: 'Bar' }], ['Bar']);
+    const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, via: 'spotify-connect-live', device_id: 'd-fresh' });
+    // First transfer used the stale id on wake path; retry used the fresh id
+    // on the live path (play=false, since we found it in a live getDevices).
+    expect(spotify.transferPlayback).toHaveBeenNthCalledWith(1, 'd-stale', true);
+    expect(spotify.transferPlayback).toHaveBeenNthCalledWith(2, 'd-fresh', false);
+    // Cache overwritten with the fresh id so the next tap goes straight to live.
+    expect(store['spotify-devices.json']).toEqual({ '1': 'd-fresh' });
+    // Actual URI is honored via the follow-up play — this is the payoff of
+    // the retry, not just the transfer.
+    expect(spotify.play).toHaveBeenCalledWith('d-fresh', expect.any(Object));
+  });
+
+  it('fires ZMON to the Denon AVR after a successful play so audio routes to Main Zone', async () => {
+    // Denon/Marantz HEOS receivers sometimes wake to Zone 2 when they get
+    // Spotify Connect audio, leaving the physical (Main Zone) speakers silent.
+    // HEOS CLI has no zone-select primitive; the classic Denon control
+    // protocol on port 23 does (ZMON = Main Zone On). Fire best-effort after
+    // spotify.play succeeds, using the IP HEOS discovery gave us.
+    const { app, state, spotify, avr } = buildTestApp();
+    state.setPlayers([{ pid: '1', name: 'Living Room', ip: '192.168.1.42' }]);
+    state.setZones([{ name: 'Living Room', pids: ['1'] }]);
+    state.setActiveZones(['Living Room']);
+    spotify.getDevices.mockResolvedValue([{ id: 'd-living', name: 'Living Room' }]);
+    const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
+    expect(res.status).toBe(200);
+    // Uses the HEOS-discovered IP directly — no separate AVR config lookup.
+    expect(avr.sendCommand).toHaveBeenCalledWith('192.168.1.42', 'ZMON');
+  });
+
+  it('does not fire ZMON when the AVR nudge itself throws (best-effort, mustn\'t break the tap)', async () => {
+    // The AVR is powered off / off the network / port 23 blocked — the play
+    // itself must still be considered successful. We swallow the error so the
+    // client's 200 isn't turned into a 500 by an AVR-side hiccup.
+    const origWarn = console.warn;
+    console.warn = vi.fn();
+    try {
+      const { app, state, spotify, avr } = buildTestApp({
+        avr: { sendCommand: vi.fn().mockRejectedValue(new Error('ECONNREFUSED')) },
+      });
+      state.setPlayers([{ pid: '1', name: 'Living Room', ip: '192.168.1.42' }]);
+      state.setZones([{ name: 'Living Room', pids: ['1'] }]);
+      state.setActiveZones(['Living Room']);
+      spotify.getDevices.mockResolvedValue([{ id: 'd-living', name: 'Living Room' }]);
+      const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
+      expect(res.status).toBe(200);
+      expect(avr.sendCommand).toHaveBeenCalledWith('192.168.1.42', 'ZMON');
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  it('skips ZMON for speakers not listed as AVRs (avoids poking non-AVR HEOS speakers on port 23)', async () => {
+    const { app, state, spotify, avr } = buildTestApp();
+    // "Kitchen" is a standalone HEOS speaker, not an AVR. Not in avrSpeakers.
+    state.setPlayers([{ pid: '1', name: 'Kitchen', ip: '192.168.1.50' }]);
+    state.setZones([{ name: 'Kitchen', pids: ['1'] }]);
+    state.setActiveZones(['Kitchen']);
+    spotify.getDevices.mockResolvedValue([{ id: 'd-kitchen', name: 'Kitchen' }]);
+    const res = await request(app).post('/api/play').send({ uri: 'spotify:track:abc' });
+    expect(res.status).toBe(200);
+    expect(avr.sendCommand).not.toHaveBeenCalled();
+  });
+
   it('opportunistically caches every visible-zone device id during /api/play, not just the active leader', async () => {
     const { app, state, spotify, store } = buildTestApp();
     seed(state,
