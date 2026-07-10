@@ -440,13 +440,10 @@ class HeosClient extends EventEmitter {
     // reports the group intact; (b) the existing group has the right pids
     // but wrong leader, so transferPlayback routes Spotify Connect audio to
     // a slave's endpoint and HEOS doesn't mirror. Forcing setGroup heals both.
+    // Still routes through the retry ladder — EID7/EID11/EID13 during a wake
+    // must not fail the user's tap regardless of which path we took.
     if (force) {
-      if (pids.length === 1) {
-        // Solo apply still benefits from skipping the getGroups round-trip;
-        // a force-solo just means "split this speaker out for sure."
-        return this.setGroup(pids);
-      }
-      return this.setGroup(pids);
+      return this._setGroupWithRetries(pids, null);
     }
 
     let groups;
@@ -455,7 +452,7 @@ class HeosClient extends EventEmitter {
     } catch (e) {
       console.warn(`[heos] _doApplyGroup: getGroups failed (${e.message}), proceeding without diff check`);
       if (pids.length === 1) return;
-      return this.setGroup(pids);
+      return this._setGroupWithRetries(pids, null);
     }
 
     const containing = groups.find((g) =>
@@ -465,7 +462,7 @@ class HeosClient extends EventEmitter {
     if (pids.length === 1) {
       // Want a solo player. If it isn't in any multi-player group, no-op.
       if (!containing || (containing.players || []).length <= 1) return;
-      return this.setGroup(pids);
+      return this._setGroupWithRetries(pids, groups);
     }
 
     // Want a group. Compare desired pids AND leader position against the
@@ -479,9 +476,27 @@ class HeosClient extends EventEmitter {
     const sameSet = current.size === desired.size && [...desired].every((p) => current.has(p));
     const sameLeader = currentPlayers[0] === idStr(pids[0]);
     if (sameSet && sameLeader) return;
+    return this._setGroupWithRetries(pids, groups);
+  }
+
+  /**
+   * Issue setGroup and recover from HEOS's known transient failure codes.
+   * Shared by the diff and force paths of _doApplyGroup so a wake-time EID7
+   * or EID11/13 gets the same retry treatment regardless of which caller
+   * asked. Handled: EID7 (leader-as-slave — ungroup then retry), EID11/EID13
+   * (busy — pause leader, retry with growing delays, resume). All other
+   * errors and exhausted retries surface to the caller unchanged.
+   * @param {string[]} pids
+   * @param {Array|null} knownGroups - groups snapshot from a prior getGroups()
+   *   if the caller already fetched it. Pass null (force path) to fetch
+   *   lazily only when needed — the EID7 branch is the only consumer, so on
+   *   the happy path we save the round-trip entirely.
+   */
+  async _setGroupWithRetries(pids, knownGroups) {
     try {
       return await this.setGroup(pids);
     } catch (e) {
+      const idStr = (x) => String(x);
       // eid=7 = "Command Couldn't Be Executed". Two known causes here:
       //   (a) transient — a speaker just transitioned (Spotify Connect wake);
       //   (b) the desired leader is currently a slave in another group, and
@@ -490,6 +505,11 @@ class HeosClient extends EventEmitter {
       //       short delay also covers (a). One retry only — if it still
       //       fails, surface the friendlier message from _onData.
       if (e.code === 'EID7') {
+        let groups = knownGroups;
+        if (!groups) {
+          try { groups = await this.getGroups(); }
+          catch { groups = []; }
+        }
         const leader = pids[0];
         const leaderGroup = groups.find((g) =>
           (g.players || []).some((p) => idStr(p.pid) === idStr(leader)),

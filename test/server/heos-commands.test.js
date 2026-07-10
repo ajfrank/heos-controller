@@ -369,6 +369,127 @@ describe('HeosClient.applyGroup', () => {
     expect(setGroupWrites.length).toBe(3);
   });
 
+  // The force:true path (used by /api/play) skips the initial get_groups so
+  // its retry ladder can't see the pre-existing group layout. When EID7
+  // fires, the ladder must LAZILY fetch groups to decide whether to ungroup
+  // the leader first. Without that lazy fetch, the ungroup step would be
+  // silently skipped and the retry would trip EID7 again — exactly the
+  // "HEOS couldn't complete the grouping" toast the user is seeing.
+  it('force:true + EID7 with leader-as-slave: lazily fetches groups, ungroups slave, retries', async () => {
+    const { client, sock } = await connectedClient();
+    // Existing group has Living (2222) leader, Kitchen (1111) slave.
+    // Force-play wants Kitchen to lead → EID7 → recovery ungroups, retries.
+    const getGroupsFrame = JSON.stringify({
+      heos: { command: 'group/get_groups', result: 'success', message: '' },
+      payload: [
+        { name: 'Living Room + Kitchen', gid: 2222, players: [
+          { name: 'Living Room', pid: 2222, role: 'leader' },
+          { name: 'Kitchen', pid: 1111, role: 'member' },
+        ] },
+      ],
+    }) + '\r\n';
+    let setGroupIdx = 0;
+    sock.onWrite((line) => {
+      if (line.includes('group/get_groups')) return getGroupsFrame;
+      if (line.includes('group/set_group?pid=1111,2222')) {
+        const i = setGroupIdx++;
+        return i === 0 ? FRAME.setGroup_eid7 : FRAME.setGroup_success;
+      }
+      if (line.includes('group/set_group?pid=1111')) return FRAME.setGroup_success;
+      return null;
+    });
+
+    const p = client.applyGroup([1111, 2222], { force: true });
+    await vi.advanceTimersByTimeAsync(1600);
+    await p;
+
+    // Force path: NO initial get_groups (that's the whole point of force).
+    // But when EID7 fires, we need groups to decide about the ungroup step —
+    // so a get_groups DOES show up in the recovery, after the initial fail.
+    const order = sock.written
+      .map((w) => w.match(/heos:\/\/([^?\s]+)/))
+      .filter(Boolean)
+      .map((m) => m[1]);
+    const firstSetGroupIdx = order.indexOf('group/set_group');
+    const firstGetGroupsIdx = order.indexOf('group/get_groups');
+    expect(firstSetGroupIdx).toBeGreaterThanOrEqual(0);
+    expect(firstGetGroupsIdx).toBeGreaterThan(firstSetGroupIdx); // lazy: after fail
+    const setGroupWrites = sock.written.filter((w) => w.includes('group/set_group'));
+    expect(setGroupWrites[0]).toContain('pid=1111,2222');
+    expect(setGroupWrites[1]).toContain('pid=1111\r\n'); // ungroup Kitchen
+    expect(setGroupWrites[2]).toContain('pid=1111,2222'); // retry
+    expect(setGroupWrites.length).toBe(3);
+  });
+
+  // Even when the lazy get_groups fails during recovery (transient HEOS
+  // slowness), the retry must still fire — worst case we skip the ungroup
+  // step and just sleep+retry. Silent failure here would mean the user's
+  // wake tap fails when HEOS is at its slowest, which is exactly when they
+  // need the recovery most.
+  it('force:true + EID7 with lazy get_groups failure: still sleeps and retries', async () => {
+    const { client, sock } = await connectedClient();
+    let setGroupIdx = 0;
+    sock.onWrite((line) => {
+      if (line.includes('group/get_groups')) {
+        // Simulate transient get_groups failure — HEOS returns an EID error
+        // (any non-success shape triggers the pending-entry reject).
+        return JSON.stringify({
+          heos: { command: 'group/get_groups', result: 'fail', message: 'eid=12&text=System error' },
+        }) + '\r\n';
+      }
+      if (line.includes('group/set_group?pid=1111,2222')) {
+        const i = setGroupIdx++;
+        return i === 0 ? FRAME.setGroup_eid7 : FRAME.setGroup_success;
+      }
+      return null;
+    });
+
+    const p = client.applyGroup([1111, 2222], { force: true });
+    await vi.advanceTimersByTimeAsync(1600);
+    await p;
+
+    const setGroupWrites = sock.written.filter((w) => w.includes('group/set_group'));
+    // No ungroup call (we couldn't determine the leader's current group), but
+    // the retry setGroup still fires and succeeds.
+    expect(setGroupWrites).toHaveLength(2);
+    expect(setGroupWrites.every((w) => w.includes('pid=1111,2222'))).toBe(true);
+  });
+
+  // Multi-pid force play hitting EID13 (HEOS busy with the wake fallout).
+  // Same pause → retry → resume pattern the diff path already exercises,
+  // now available on the force path too.
+  it('force:true + EID13 with active playback: pauses leader, retries with delays, resumes', async () => {
+    const { client, sock } = await connectedClient();
+    let setGroupIdx = 0;
+    sock.onWrite((line) => {
+      // Force path skips the initial get_groups, so no handler for that here.
+      if (line.includes('player/get_play_state')) return FRAME.getPlayState_play;
+      if (line.includes('player/set_play_state')) return FRAME.setPlayState_success;
+      if (line.includes('group/set_group?pid=1111,2222,3333')) {
+        const i = setGroupIdx++;
+        return i === 0 ? FRAME.setGroup_eid13 : FRAME.setGroup_success;
+      }
+      return null;
+    });
+
+    const p = client.applyGroup([1111, 2222, 3333], { force: true });
+    await vi.advanceTimersByTimeAsync(900);
+    await p;
+
+    // No initial get_groups on the force path.
+    expect(sock.written.some((w) => w.includes('group/get_groups'))).toBe(false);
+    // Pause happens between fail and retry; resume happens after retry succeeds.
+    const order = sock.written
+      .map((w) => w.match(/heos:\/\/([^?\s]+)(\?[^\s]+)?/))
+      .filter(Boolean)
+      .map((m) => `${m[1]}${m[2] ? '?' + m[2].slice(1, 60) : ''}`);
+    const lastIdx = (substr) => order.length - 1 - [...order].reverse().findIndex((s) => s.includes(substr));
+    const firstIdx = (substr) => order.findIndex((s) => s.includes(substr));
+    expect(firstIdx('player/set_play_state?pid=1111&state=pause')).toBeGreaterThan(firstIdx('group/set_group'));
+    expect(lastIdx('group/set_group')).toBeGreaterThan(firstIdx('player/set_play_state?pid=1111&state=pause'));
+    expect(firstIdx('player/set_play_state?pid=1111&state=play')).toBeGreaterThan(lastIdx('group/set_group'));
+  });
+
   // Skip the ungroup step when the desired leader is already solo (not in a
   // multi-player group). EID7 still triggers a retry, but no ungroup is sent.
   it('on EID7 when leader is already solo: skips ungroup, just sleeps and retries', async () => {
